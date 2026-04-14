@@ -2,7 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { 
   Server, Globe, RefreshCw, Users, KanbanSquare, 
   DollarSign, TrendingUp, Plus, X, ExternalLink, 
-  CheckCircle2, XCircle, ShieldCheck, Activity
+  CheckCircle2, XCircle, ShieldCheck, Activity,
+  Trash2, LogOut // Ícones que estavam faltando e causavam a tela branca
 } from 'lucide-react';
 
 // --- HOOK DE PERSISTÊNCIA LOCAL (Para o Painel Master) ---
@@ -29,8 +30,7 @@ function usePersistentState(key, initialValue) {
   return [state, setValue];
 }
 
-// --- DADOS MOCK PARA PREVIEW NO CANVAS ---
-// Como o Canvas não pode acessar suas VPS reais ainda, usamos isso para você testar a interface.
+// --- DADOS MOCK PARA PREVIEW ---
 const mockClientData = {
   kanban: [
     { id: '1', title: 'Post Carrossel', col: 'Aprovados', date: '2026-05-10' },
@@ -44,17 +44,27 @@ const mockClientData = {
   ]
 };
 
+// --- COMPONENTES DE UI ---
+const Toast = ({ msg, onClose }) => {
+  useEffect(() => { const timer = setTimeout(onClose, 4000); return () => clearTimeout(timer); }, [onClose]);
+  return (
+    <div className="fixed bottom-4 right-4 bg-gray-800 text-white px-6 py-3 rounded-xl shadow-2xl flex items-center gap-3 z-50 animate-bounce">
+      <span className="text-sm font-medium">{msg}</span>
+      <button onClick={onClose} className="hover:text-gray-300"><X size={16} /></button>
+    </div>
+  );
+};
+
 // --- APP CENTRAL (MASTER) ---
 export default function CentralApp() {
   const [masterLogged, setMasterLogged] = useState(false);
   const [clients, setClients] = usePersistentState('azione_master_clients', []);
-  const [view, setView] = useState('dashboard');
   const [toast, setToast] = useState('');
   
   const [syncingId, setSyncingId] = useState(null);
   const [addModalOpen, setAddModalOpen] = useState(false);
 
-  const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(''), 4000); };
+  const showToast = (msg) => setToast(msg);
 
   // --- LÓGICA DE SINCRONIZAÇÃO (HTTP REQUEST PARA AS VPS) ---
   const syncClient = async (client) => {
@@ -62,7 +72,7 @@ export default function CentralApp() {
     try {
       let kanbanData, financesData, reportsData;
 
-      // 1. Simulação para testes no Canvas (se a URL for 'demo')
+      // 1. Simulação para testes ou URL demo
       if (client.url.includes('demo') || client.url.includes('localhost')) {
         await new Promise(r => setTimeout(r, 1500)); // simula delay de rede
         if (client.login === 'admin' && client.pass === 'admin123') {
@@ -144,7 +154,7 @@ export default function CentralApp() {
             </div>
             <button type="submit" className="w-full bg-gradient-to-r from-blue-600 to-cyan-600 text-white p-4 rounded-xl font-bold text-lg shadow-lg hover:shadow-cyan-500/25 transition-all">Conectar à Central</button>
           </form>
-          <p className="text-center text-xs text-gray-600 mt-6 mt-4">Dica para o Canvas: digite <span className="text-gray-400">master2026</span></p>
+          <p className="text-center text-xs text-gray-600 mt-6">Senha padrão: <span className="text-gray-400">master2026</span></p>
         </div>
         {toast && <Toast msg={toast} onClose={() => setToast('')} />}
       </div>
@@ -161,7 +171,7 @@ export default function CentralApp() {
 
   clients.forEach(c => {
     if (c.data?.finances) globalPendencies += c.data.finances.filter(f => f.status !== 'Pago').length;
-    if (c.data?.reports?.length > 0) globalLeads += Number(c.data.reports[0].leads || 0); // Pega o lead do ultimo relatório
+    if (c.data?.reports?.length > 0) globalLeads += Number(c.data.reports[0].leads || 0);
     if (c.data?.kanban) globalAprovados += c.data.kanban.filter(k => k.col === 'Aprovados' || k.col === 'Programados').length;
   });
 
@@ -182,7 +192,7 @@ export default function CentralApp() {
           <div className="flex gap-4">
             <button onClick={syncAll} className="flex items-center gap-2 bg-[#1F2937] hover:bg-[#374151] border border-gray-700 px-4 py-2 rounded-lg text-sm font-bold transition-colors">
               <RefreshCw size={16} className={syncingId ? 'animate-spin text-cyan-400' : 'text-gray-400'} /> 
-              Sincronizar Todos
+              <span className="hidden sm:inline">Sincronizar Todos</span>
             </button>
             <button onClick={() => setMasterLogged(false)} className="text-red-400 hover:text-red-300 p-2">
               <LogOut size={20} />
@@ -201,8 +211,8 @@ export default function CentralApp() {
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
             <StatCard title="Clientes Conectados" value={`${onlineClients} / ${totalClients}`} icon={<Server/>} color="text-emerald-400" bg="bg-emerald-400/10" border="border-emerald-500/20" />
             <StatCard title="Faturas Pendentes" value={globalPendencies} icon={<DollarSign/>} color="text-rose-400" bg="bg-rose-400/10" border="border-rose-500/20" />
-            <StatCard title="Posts Prontos p/ Agendar" value={globalAprovados} icon={<KanbanSquare/>} color="text-amber-400" bg="bg-amber-400/10" border="border-amber-500/20" />
-            <StatCard title="Leads Gerados (Últ. Relatório)" value={globalLeads} icon={<TrendingUp/>} color="text-blue-400" bg="bg-blue-400/10" border="border-blue-500/20" />
+            <StatCard title="Posts p/ Agendar" value={globalAprovados} icon={<KanbanSquare/>} color="text-amber-400" bg="bg-amber-400/10" border="border-amber-500/20" />
+            <StatCard title="Leads (Últ. Relatório)" value={globalLeads} icon={<TrendingUp/>} color="text-blue-400" bg="bg-blue-400/10" border="border-blue-500/20" />
           </div>
         </section>
 
@@ -213,7 +223,7 @@ export default function CentralApp() {
               <Users size={20} className="text-blue-500"/> Instâncias (VPS Clientes)
             </h2>
             <button onClick={() => setAddModalOpen(true)} className="bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-lg text-sm font-bold shadow-lg flex items-center gap-2 transition-colors">
-              <Plus size={16} /> Nova Conexão VPS
+              <Plus size={16} /> <span className="hidden sm:inline">Nova Conexão VPS</span>
             </button>
           </div>
 
@@ -221,13 +231,13 @@ export default function CentralApp() {
             {clients.length === 0 && (
               <div className="col-span-full text-center py-20 bg-[#111827] rounded-3xl border border-gray-800">
                 <Globe size={48} className="mx-auto text-gray-700 mb-4" />
-                <p className="text-gray-400 font-bold">Nenhum painel de cliente conectado.</p>
-                <p className="text-sm text-gray-600 mt-2">Clique em "Nova Conexão VPS" para adicionar o link de um cliente.</p>
+                <p className="text-gray-400 font-bold text-lg">Nenhum painel de cliente conectado.</p>
+                <p className="text-sm text-gray-600 mt-2">Clique em "Nova Conexão VPS" para adicionar o link do sistema de um cliente.</p>
               </div>
             )}
             
             {clients.map(client => (
-              <div key={client.id} className="bg-[#111827] rounded-2xl border border-gray-800 overflow-hidden flex flex-col relative group hover:border-gray-600 transition-colors">
+              <div key={client.id} className="bg-[#111827] rounded-2xl border border-gray-800 overflow-hidden flex flex-col relative group hover:border-gray-600 transition-colors shadow-lg">
                 <div className="p-5 border-b border-gray-800 flex justify-between items-start">
                   <div>
                     <div className="flex items-center gap-3 mb-1">
@@ -244,7 +254,7 @@ export default function CentralApp() {
                     <button onClick={() => syncClient(client)} className="p-2 bg-gray-800 hover:bg-gray-700 rounded-lg text-gray-300 transition-colors" title="Sincronizar Dados">
                       <RefreshCw size={16} className={syncingId === client.id ? 'animate-spin text-cyan-400' : ''} />
                     </button>
-                    <button onClick={() => { if(confirm('Remover conexão deste cliente?')) setClients(clients.filter(c => c.id !== client.id))}} className="p-2 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 rounded-lg transition-colors">
+                    <button onClick={() => { if(window.confirm('Remover conexão deste cliente?')) setClients(clients.filter(c => c.id !== client.id))}} className="p-2 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 rounded-lg transition-colors">
                       <Trash2 size={16} />
                     </button>
                   </div>
@@ -321,20 +331,19 @@ export default function CentralApp() {
               <div>
                 <label className="text-xs font-bold text-gray-400 uppercase mb-1 block">URL do Painel do Cliente</label>
                 <input name="url" required placeholder="https://painel-agmaq.com.br" className="w-full p-3 bg-[#1F2937] border border-gray-700 rounded-xl outline-none focus:border-blue-500 text-white font-mono text-sm" />
-                <p className="text-[10px] text-blue-400 mt-1">Dica Canvas: use a URL "demo" para testar com dados simulados.</p>
               </div>
 
               <div className="grid grid-cols-2 gap-4 pt-2 border-t border-gray-800 mt-4">
                 <div className="col-span-full">
-                  <p className="text-xs font-bold text-amber-500 flex items-center gap-1"><ShieldCheck size={14}/> Credenciais de Administrador daquele Painel</p>
+                  <p className="text-xs font-bold text-amber-500 flex items-center gap-1"><ShieldCheck size={14}/> Credenciais de Administrador do Painel</p>
                 </div>
                 <div>
                   <label className="text-xs font-bold text-gray-400 uppercase mb-1 block">Usuário Admin</label>
-                  <input name="login" required placeholder="admin" defaultValue="admin" className="w-full p-3 bg-[#1F2937] border border-gray-700 rounded-xl outline-none focus:border-blue-500 text-white" />
+                  <input name="login" required placeholder="gestor" defaultValue="gestor" className="w-full p-3 bg-[#1F2937] border border-gray-700 rounded-xl outline-none focus:border-blue-500 text-white" />
                 </div>
                 <div>
                   <label className="text-xs font-bold text-gray-400 uppercase mb-1 block">Senha Admin</label>
-                  <input name="pass" type="password" required placeholder="***" defaultValue="admin123" className="w-full p-3 bg-[#1F2937] border border-gray-700 rounded-xl outline-none focus:border-blue-500 text-white" />
+                  <input name="pass" type="password" required placeholder="***" defaultValue="gestor123" className="w-full p-3 bg-[#1F2937] border border-gray-700 rounded-xl outline-none focus:border-blue-500 text-white" />
                 </div>
               </div>
 
@@ -346,7 +355,7 @@ export default function CentralApp() {
           </div>
         </div>
       )}
-
+      
       {toast && <Toast msg={toast} onClose={() => setToast('')} />}
     </div>
   );
@@ -355,13 +364,13 @@ export default function CentralApp() {
 // Subcomponente de Estatística
 function StatCard({ title, value, icon, color, bg, border }) {
   return (
-    <div className={`p-5 rounded-2xl border ${border} ${bg} flex flex-col justify-between`}>
-      <div className="flex justify-between items-start mb-2">
-        <span className={`p-2 rounded-lg bg-[#111827] border ${border} ${color}`}>{icon}</span>
+    <div className={`p-5 rounded-2xl border ${border} ${bg} flex flex-col justify-between shadow-lg`}>
+      <div className="flex justify-between items-start mb-3">
+        <span className={`p-2.5 rounded-xl bg-[#111827] border ${border} ${color}`}>{icon}</span>
       </div>
       <div>
         <h3 className="text-3xl font-black text-white mb-1">{value}</h3>
-        <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">{title}</p>
+        <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest leading-tight">{title}</p>
       </div>
     </div>
   );
