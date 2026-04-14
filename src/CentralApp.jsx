@@ -7,9 +7,16 @@ import {
   BarChart3, Settings, CreditCard, Edit3
 } from 'lucide-react';
 
-// --- FUNÇÃO AUXILIAR DE SEGURANÇA (Evita Tela Branca) ---
+// --- FUNÇÕES AUXILIARES DE SEGURANÇA E FORMATAÇÃO ---
 const safeArray = (arr) => Array.isArray(arr) ? arr : [];
 const safeObject = (obj) => (typeof obj === 'object' && obj !== null && !Array.isArray(obj)) ? obj : {};
+
+// Resolve o bug do JavaScript de voltar 1 dia para trás por causa do fuso horário do Brasil
+const formatSafeDate = (dateStr) => {
+  if (!dateStr) return 'S/ Data';
+  const safeStr = dateStr.length === 10 ? `${dateStr}T12:00:00` : dateStr;
+  return new Date(safeStr).toLocaleDateString('pt-BR');
+};
 
 // --- HOOK DE PERSISTÊNCIA NA VPS (Com fallback local Blindado) ---
 function usePersistentState(key, initialValue) {
@@ -19,7 +26,6 @@ function usePersistentState(key, initialValue) {
       if (!item || item === 'null' || item === 'undefined') return initialValue;
       const parsed = JSON.parse(item);
       
-      // Validação rígida de tipo para não quebrar a tela
       if (Array.isArray(initialValue) && !Array.isArray(parsed)) return initialValue;
       if (typeof initialValue === 'object' && !Array.isArray(initialValue) && (typeof parsed !== 'object' || Array.isArray(parsed) || parsed === null)) return initialValue;
       
@@ -38,18 +44,13 @@ function usePersistentState(key, initialValue) {
           
           setState(prev => {
             let newState;
-            // Se for configuração (Objeto)
             if (typeof initialValue === 'object' && !Array.isArray(initialValue)) {
                newState = { ...initialValue, ...safeObject(prev), ...safeObject(finalData) };
-            } 
-            // Se for Lista (Array)
-            else if (Array.isArray(initialValue)) {
+            } else if (Array.isArray(initialValue)) {
                newState = safeArray(finalData);
-            } 
-            else {
+            } else {
                newState = finalData;
             }
-            
             localStorage.setItem(key, JSON.stringify(newState));
             return newState;
           });
@@ -112,7 +113,7 @@ export default function CentralApp() {
   const [currentUser, setCurrentUser] = usePersistentState('azione_master_user', null);
   const [clients, setClients] = usePersistentState('azione_master_clients', []);
   const [masterConfig, setMasterConfig] = usePersistentState('azione_master_config', {
-    companyName: 'Azione Master', logo: '', primaryColor: '#2563EB', secondaryColor: '#0891B2'
+    companyName: 'Azione Master', logo: '', primaryColor: '#2563EB', secondaryColor: '#0891B2', bgColor: '#0B1120'
   });
   
   const [mainView, setMainView] = useState('dashboard'); // dashboard | settings
@@ -127,7 +128,13 @@ export default function CentralApp() {
   
   // VARIÁVEIS BLINDADAS CONTRA TELA BRANCA
   const safeClients = safeArray(clients);
-  const safeConfig = masterConfig || { companyName: 'Azione Master', logo: '', primaryColor: '#2563EB', secondaryColor: '#0891B2' };
+  const safeConfig = { 
+    companyName: masterConfig?.companyName || 'Azione Master', 
+    logo: masterConfig?.logo || '', 
+    primaryColor: masterConfig?.primaryColor || '#2563EB', 
+    secondaryColor: masterConfig?.secondaryColor || '#0891B2',
+    bgColor: masterConfig?.bgColor || '#0B1120'
+  };
   const activeClient = safeClients.find(c => c.id === activeClientId);
 
   const gradientStyle = { background: `linear-gradient(to right, ${safeConfig.primaryColor}, ${safeConfig.secondaryColor})` };
@@ -200,23 +207,29 @@ export default function CentralApp() {
 
   const syncAll = () => safeClients.forEach(c => syncClient(c));
 
-  // --- LÓGICA DE SALVAR DADOS DIRETAMENTE NA VPS DO CLIENTE ---
+  // --- LÓGICA DE SALVAR DADOS DIRETAMENTE NA VPS DO CLIENTE (Otimista) ---
   const saveClientData = async (client, endpoint, newData) => {
+    // 1. ATUALIZAÇÃO OTIMISTA: Altera na tela imediatamente para não haver delay
+    setClients(prev => safeArray(prev).map(c => c.id === client.id ? { 
+      ...c, data: { ...safeObject(c.data), [endpoint]: newData } 
+    } : c));
+
     if (client.url.includes('demo') || client.url.includes('localhost')) {
-      setClients(prev => safeArray(prev).map(c => c.id === client.id ? { ...c, data: { ...safeObject(c.data), [endpoint]: newData } } : c));
       showToast("Ação realizada com sucesso! (Modo Demo)");
       return;
     }
+    
+    // 2. ATUALIZAÇÃO REAL NA VPS EM BACKGROUND
     try {
       const urlBase = client.url.replace(/\/$/, '');
       const res = await fetch(`${urlBase}/api/data/${endpoint}`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ data: newData })
       });
       if(!res.ok) throw new Error("Falha ao salvar na VPS.");
-      showToast("Dados salvos e atualizados no cliente!");
-      syncClient(client); // Ressincroniza
+      showToast("Dados salvos no cliente com sucesso!");
     } catch(err) {
-      showToast(`Erro de conexão: ${err.message}`);
+      showToast(`Erro de conexão ao salvar: ${err.message}`);
+      syncClient(client); // Se der erro, ressincroniza para reverter a tela otimista
     }
   };
 
@@ -243,7 +256,7 @@ export default function CentralApp() {
   // --- LOGIN ---
   if (!currentUser) {
     return (
-      <div className="min-h-screen bg-[#0A0F1C] flex items-center justify-center p-4 font-sans text-gray-200">
+      <div className="min-h-screen flex items-center justify-center p-4 font-sans text-gray-200" style={{ backgroundColor: safeConfig.bgColor }}>
         <div className="bg-[#111827] p-10 rounded-3xl shadow-2xl border border-gray-800 w-full max-w-md relative overflow-hidden">
           <div className="absolute top-0 left-0 w-full h-1" style={gradientStyle}></div>
           <div className="flex justify-center mb-6">
@@ -300,7 +313,7 @@ export default function CentralApp() {
   const totalClients = safeClients.length;
 
   return (
-    <div className="min-h-screen bg-[#0B1120] text-gray-300 font-sans flex flex-col relative">
+    <div className="min-h-screen text-gray-300 font-sans flex flex-col relative transition-colors duration-500" style={{ backgroundColor: safeConfig.bgColor }}>
       <header className="bg-[#111827] border-b border-gray-800 p-4 sticky top-0 z-40">
         <div className="max-w-7xl mx-auto flex justify-between items-center">
           <div className="flex items-center gap-4 cursor-pointer" onClick={() => setMainView('dashboard')}>
@@ -345,19 +358,26 @@ export default function CentralApp() {
                 <label className="text-xs font-bold text-gray-500 uppercase tracking-widest block mb-2">URL da Logo (Fundo Escuro Recomendado)</label>
                 <input value={safeConfig.logo} onChange={e => setMasterConfig({...safeConfig, logo: e.target.value})} className="w-full p-3 bg-[#1F2937] border border-gray-700 rounded-xl outline-none text-white focus:border-gray-500 text-sm font-mono" placeholder="https://..." />
               </div>
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <div className="bg-[#1F2937] border border-gray-700 p-3 rounded-xl flex items-center justify-between">
-                  <label className="text-xs font-bold text-gray-400 uppercase tracking-widest">Cor Primária</label>
+                  <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Cor Primária</label>
                   <div className="flex items-center gap-2">
                     <input type="text" value={safeConfig.primaryColor} onChange={e => setMasterConfig({...safeConfig, primaryColor: e.target.value})} className="bg-transparent w-20 outline-none font-mono text-white text-sm" />
                     <div className="w-6 h-6 rounded-md border border-gray-600" style={{backgroundColor: safeConfig.primaryColor}}></div>
                   </div>
                 </div>
                 <div className="bg-[#1F2937] border border-gray-700 p-3 rounded-xl flex items-center justify-between">
-                  <label className="text-xs font-bold text-gray-400 uppercase tracking-widest">Cor Secundária</label>
+                  <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Cor Secundária</label>
                   <div className="flex items-center gap-2">
                     <input type="text" value={safeConfig.secondaryColor} onChange={e => setMasterConfig({...safeConfig, secondaryColor: e.target.value})} className="bg-transparent w-20 outline-none font-mono text-white text-sm" />
                     <div className="w-6 h-6 rounded-md border border-gray-600" style={{backgroundColor: safeConfig.secondaryColor}}></div>
+                  </div>
+                </div>
+                <div className="bg-[#1F2937] border border-gray-700 p-3 rounded-xl flex items-center justify-between">
+                  <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Fundo (Bg)</label>
+                  <div className="flex items-center gap-2">
+                    <input type="text" value={safeConfig.bgColor} onChange={e => setMasterConfig({...safeConfig, bgColor: e.target.value})} className="bg-transparent w-20 outline-none font-mono text-white text-sm" />
+                    <div className="w-6 h-6 rounded-md border border-gray-600" style={{backgroundColor: safeConfig.bgColor}}></div>
                   </div>
                 </div>
               </div>
@@ -550,7 +570,7 @@ export default function CentralApp() {
                           {safeArray(activeClient.data.reports).slice(0, 3).map(rep => (
                             <div key={rep.id} className="bg-[#1F2937] p-5 rounded-2xl border border-gray-700 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
                               <div>
-                                <p className="text-[10px] text-gray-500 font-bold uppercase tracking-widest mb-1">Referência: {new Date(rep.date).toLocaleDateString('pt-BR')}</p>
+                                <p className="text-[10px] text-gray-500 font-bold uppercase tracking-widest mb-1">Referência: {formatSafeDate(rep.date)}</p>
                                 <div className="flex gap-6 mt-2">
                                   <div><span className="text-xs text-gray-400 block">Leads</span><span className="font-black text-lg" style={{ color: safeConfig.secondaryColor }}>{rep.leads}</span></div>
                                   <div><span className="text-xs text-gray-400 block">Custo/Lead</span><span className="font-black text-white text-lg">R$ {rep.cost}</span></div>
@@ -592,7 +612,7 @@ export default function CentralApp() {
                         <tbody>
                           {safeArray(activeClient.data?.finances).map((fin) => (
                             <tr key={fin.id} className="border-b border-gray-800 last:border-0 hover:bg-gray-800/20">
-                              <td className="p-4 font-bold text-white text-sm">{fin.desc} <span className="block text-gray-500 text-xs font-normal mt-0.5">Venc: {fin.due ? new Date(fin.due).toLocaleDateString('pt-BR') : 'S/ Data'}</span></td>
+                              <td className="p-4 font-bold text-white text-sm">{fin.desc} <span className="block text-gray-500 text-xs font-normal mt-0.5">Venc: {formatSafeDate(fin.due)}</span></td>
                               <td className="p-4">
                                 <button onClick={() => {
                                   const newStatus = fin.status === 'Pago' ? 'Pendente' : 'Pago';
@@ -633,7 +653,7 @@ export default function CentralApp() {
                         <div key={doc.id} className="bg-[#1F2937] border border-gray-700 p-4 rounded-xl flex items-center justify-between">
                           <div>
                             <h4 className="font-bold text-white text-sm">{doc.title}</h4>
-                            <p className="text-[10px] text-gray-500 uppercase mt-1">Add: {new Date(doc.date).toLocaleDateString('pt-BR')}</p>
+                            <p className="text-[10px] text-gray-500 uppercase mt-1">Add: {formatSafeDate(doc.date)}</p>
                           </div>
                           <div className="flex gap-2">
                             <a href={doc.link} target="_blank" rel="noreferrer" className="p-2 bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-lg"><ExternalLink size={14}/></a>
