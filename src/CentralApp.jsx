@@ -4,7 +4,7 @@ import {
   DollarSign, TrendingUp, Plus, X, ExternalLink, 
   CheckCircle2, XCircle, ShieldCheck, Activity,
   Trash2, LogOut, CalendarDays, ArrowRight, FileText,
-  BarChart3 // Novo ícone importado
+  BarChart3, Settings, CreditCard, Edit3
 } from 'lucide-react';
 
 // --- HOOK DE PERSISTÊNCIA NA VPS (Com fallback local) ---
@@ -18,14 +18,18 @@ function usePersistentState(key, initialValue) {
     }
   });
 
-  // Busca os dados da VPS assim que o painel abre
   useEffect(() => {
     fetch(`/api/data/${key}`)
       .then(res => { if (!res.ok) throw new Error(); return res.json(); })
       .then(data => {
         if (data && data.data) {
-          setState(data.data);
-          localStorage.setItem(key, JSON.stringify(data.data)); // Sincroniza o local
+          // Merge objects se for configuração
+          if (typeof data.data === 'object' && !Array.isArray(data.data) && data.data !== null) {
+            setState(prev => ({...prev, ...data.data}));
+          } else {
+            setState(data.data);
+          }
+          localStorage.setItem(key, JSON.stringify(data.data));
         }
       })
       .catch(() => {});
@@ -36,14 +40,11 @@ function usePersistentState(key, initialValue) {
       try {
         const valueToStore = value instanceof Function ? value(prevState) : value;
         localStorage.setItem(key, JSON.stringify(valueToStore));
-        
-        // Salva silenciosamente na VPS do Master
         fetch(`/api/data/${key}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ data: valueToStore })
         }).catch(console.error);
-
         return valueToStore;
       } catch (error) {
         console.error(error);
@@ -59,62 +60,64 @@ function usePersistentState(key, initialValue) {
 const mockClientData = {
   kanban: [
     { id: '1', title: 'Carrossel de Dicas', desc: 'Dicas de marketing...', col: 'Aprovados', date: '' },
-    { id: '2', title: 'Vídeo Institucional', desc: 'Reels para o feed.', col: 'Aprovados', date: '' },
-    { id: '3', title: 'Promoção de Inverno', col: 'Programados', date: '2026-05-15' }
+    { id: '2', title: 'Vídeo Institucional', desc: 'Reels para o feed.', col: 'Aprovados', date: '' }
   ],
   finances: [
-    { id: 1, desc: 'Gestão de Tráfego', due: '2026-05-05', status: 'Pendente', pix: '123' }
+    { id: 1, desc: 'Gestão de Tráfego', due: '2026-05-05', status: 'Pendente', pix: '123456789' }
   ],
   reports: [
-    { id: 1, date: '2026-04-10', leads: 120, cost: '4.50', contracts: 8, custom: [] },
-    { id: 2, date: '2026-03-10', leads: 95, cost: '5.20', contracts: 5, custom: [] }
+    { id: 1, date: '2026-04-10', leads: 120, cost: '4.50', contracts: 8, custom: [] }
   ],
-  config: { // Mock da config para simular o Looker URL
-    lookerStudioUrl: 'https://lookerstudio.google.com/reporting/10b2cbf5-4b1f-4f87-a96a-855d8067c523/page/4E6KF'
-  }
+  docs: [
+    { id: 1, title: 'Contrato Social', date: '2026-01-10', link: '#' }
+  ],
+  config: { lookerStudioUrl: 'https://lookerstudio.google.com/reporting/10b2cbf5-4b1f-4f87-a96a-855d8067c523/page/4E6KF' }
 };
 
 // --- COMPONENTES DE UI ---
 const Toast = ({ msg, onClose }) => {
   useEffect(() => { const timer = setTimeout(onClose, 4000); return () => clearTimeout(timer); }, [onClose]);
   return (
-    <div className="fixed bottom-4 right-4 bg-blue-600 text-white px-6 py-3 rounded-xl shadow-2xl flex items-center gap-3 z-50 animate-bounce">
+    <div className="fixed bottom-4 right-4 bg-gray-800 text-white px-6 py-3 rounded-xl shadow-2xl flex items-center gap-3 z-50 animate-bounce border border-gray-700">
       <span className="text-sm font-bold">{msg}</span>
-      <button onClick={onClose} className="hover:text-blue-200"><X size={16} /></button>
+      <button onClick={onClose} className="hover:text-gray-300"><X size={16} /></button>
     </div>
   );
 };
 
 // --- APP CENTRAL (MASTER) ---
 export default function CentralApp() {
-  // Novo sistema de Login
   const [currentUser, setCurrentUser] = usePersistentState('azione_master_user', null);
   const [clients, setClients] = usePersistentState('azione_master_clients', []);
-  const [toast, setToast] = useState('');
+  const [masterConfig, setMasterConfig] = usePersistentState('azione_master_config', {
+    companyName: 'Azione Master', logo: '', primaryColor: '#2563EB', secondaryColor: '#0891B2'
+  });
   
+  const [mainView, setMainView] = useState('dashboard'); // dashboard | settings
+  const [toast, setToast] = useState('');
   const [syncingId, setSyncingId] = useState(null);
   const [addModalOpen, setAddModalOpen] = useState(false);
   const [activeClientId, setActiveClientId] = useState(null);
-
-  // NOVO ESTADO: Controle da aba ativa no modal do cliente
-  const [activeClientTab, setActiveClientTab] = useState('geral'); // 'geral' ou 'looker'
+  const [activeClientTab, setActiveClientTab] = useState('geral'); // geral | looker | financeiro
+  const [editingFin, setEditingFin] = useState(null);
 
   const showToast = (msg) => setToast(msg);
-
   const activeClient = clients.find(c => c.id === activeClientId);
 
-  // Formata a URL do Looker Studio para Embed automaticamente
+  const gradientStyle = { background: `linear-gradient(to right, ${masterConfig.primaryColor}, ${masterConfig.secondaryColor})` };
+  const primaryBg = { backgroundColor: masterConfig.primaryColor };
+
   const getEmbedUrl = (url) => {
     if(!url) return '';
     if(url.includes('/embed/')) return url;
     return url.replace('/u/0/reporting/', '/embed/reporting/').replace('/reporting/', '/embed/reporting/');
   };
 
-  // --- LÓGICA DE SINCRONIZAÇÃO (HTTP REQUEST PARA AS VPS) ---
+  // --- LÓGICA DE SINCRONIZAÇÃO DA VPS ---
   const syncClient = async (client) => {
     setSyncingId(client.id);
     try {
-      let kanbanData, financesData, reportsData, configData;
+      let kanbanData, financesData, reportsData, configData, docsData;
 
       if (client.url.includes('demo') || client.url.includes('localhost')) {
         await new Promise(r => setTimeout(r, 1000));
@@ -122,58 +125,46 @@ export default function CentralApp() {
            kanbanData = mockClientData.kanban;
            financesData = mockClientData.finances;
            reportsData = mockClientData.reports;
-           configData = mockClientData.config; // Simula a config
-        } else {
-          throw new Error("Credenciais recusadas pelo cliente.");
-        }
-      } 
-      else {
+           docsData = mockClientData.docs;
+           configData = mockClientData.config;
+        } else throw new Error("Credenciais recusadas pelo cliente.");
+      } else {
         const urlBase = client.url.replace(/\/$/, '');
         const resUsers = await fetch(`${urlBase}/api/data/users`);
         if (!resUsers.ok) throw new Error("VPS Inacessível (Erro 404/500)");
         
         const dataUsers = await resUsers.json();
         let usersArray = dataUsers?.data && Array.isArray(dataUsers.data) ? dataUsers.data : (Array.isArray(dataUsers) ? dataUsers : []);
-        
-        if (usersArray.length === 0) {
-          usersArray = [
-            { login: 'gestor', pass: 'gestor123', role: 'administrador' },
-            { login: 'admin', pass: 'admin123', role: 'administrador' }
-          ];
-        }
+        if (usersArray.length === 0) usersArray = [{ login: 'gestor', pass: 'gestor123', role: 'administrador' }];
 
         const isValid = usersArray.find(u => u.login === client.login && u.pass === client.pass && ['gestor', 'administrador'].includes(u.role));
         if (!isValid) throw new Error("Acesso Negado: Senha incorreta ou permissão insuficiente.");
 
-        // Adicionada a busca pela configuração do cliente
-        const [resK, resF, resR, resC] = await Promise.all([
+        const [resK, resF, resR, resC, resD] = await Promise.all([
           fetch(`${urlBase}/api/data/kanban`),
           fetch(`${urlBase}/api/data/finances`),
           fetch(`${urlBase}/api/data/reports`),
-          fetch(`${urlBase}/api/data/config`) // Busca as configurações (onde está o link do Looker)
+          fetch(`${urlBase}/api/data/config`),
+          fetch(`${urlBase}/api/data/docs`)
         ]);
 
-        const jsonK = await resK.json();
-        const jsonF = await resF.json();
-        const jsonR = await resR.json();
-        const jsonC = await resC.json();
+        const jsonK = await resK.json(); const jsonF = await resF.json(); 
+        const jsonR = await resR.json(); const jsonC = await resC.json(); const jsonD = await resD.json();
 
         kanbanData = jsonK?.data || (Array.isArray(jsonK) ? jsonK : []);
         financesData = jsonF?.data || (Array.isArray(jsonF) ? jsonF : []);
         reportsData = jsonR?.data || (Array.isArray(jsonR) ? jsonR : []);
-        configData = jsonC?.data || {}; // Pega a config real do cliente
+        docsData = jsonD?.data || (Array.isArray(jsonD) ? jsonD : []);
+        configData = jsonC?.data || {};
       }
 
       setClients(prev => prev.map(c => c.id === client.id ? {
         ...c, status: 'online', lastSync: new Date().toISOString(), error: null,
-        data: { kanban: kanbanData, finances: financesData, reports: reportsData, config: configData }
+        data: { kanban: kanbanData, finances: financesData, reports: reportsData, docs: docsData, config: configData }
       } : c));
-
       showToast(`Sincronizado: ${client.name}`);
     } catch (err) {
-      setClients(prev => prev.map(c => c.id === client.id ? {
-        ...c, status: 'offline', error: err.message
-      } : c));
+      setClients(prev => prev.map(c => c.id === client.id ? { ...c, status: 'offline', error: err.message } : c));
       showToast(`Erro em ${client.name}: ${err.message}`);
     } finally {
       setSyncingId(null);
@@ -182,70 +173,67 @@ export default function CentralApp() {
 
   const syncAll = () => clients.forEach(c => syncClient(c));
 
-  // --- LÓGICA DO SOCIAL MEDIA: AGENDAR POST VIA API DA VPS ---
-  const schedulePost = async (client, cardId, dateStr) => {
-    if(!dateStr) return showToast("Por favor, selecione uma data!");
-
+  // --- LÓGICA DE SALVAR DADOS DIRETAMENTE NA VPS DO CLIENTE ---
+  const saveClientData = async (client, endpoint, newData) => {
     if (client.url.includes('demo') || client.url.includes('localhost')) {
-      const card = mockClientData.kanban.find(c => c.id === cardId);
-      if(card) { card.date = dateStr; card.col = 'Programados'; }
-      showToast("Post agendado! (Modo Demo)");
-      syncClient(client);
+      setClients(prev => prev.map(c => c.id === client.id ? { ...c, data: { ...c.data, [endpoint]: newData } } : c));
+      showToast("Ação realizada com sucesso! (Modo Demo)");
       return;
     }
-
     try {
       const urlBase = client.url.replace(/\/$/, '');
-      const resK = await fetch(`${urlBase}/api/data/kanban`);
-      const jsonK = await resK.json();
-      let kanbanArray = jsonK?.data || (Array.isArray(jsonK) ? jsonK : []);
-
-      let found = false;
-      kanbanArray = kanbanArray.map(c => {
-        if(c.id === cardId) {
-          found = true;
-          return { ...c, date: dateStr, col: 'Programados' };
-        }
-        return c;
+      const res = await fetch(`${urlBase}/api/data/${endpoint}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ data: newData })
       });
-
-      if(!found) throw new Error("Card não encontrado no servidor.");
-
-      const resSave = await fetch(`${urlBase}/api/data/kanban`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ data: kanbanArray })
-      });
-
-      if(!resSave.ok) throw new Error("Falha ao salvar a data na VPS do cliente.");
-      
-      showToast("Post agendado e movido com sucesso!");
-      syncClient(client);
-
+      if(!res.ok) throw new Error("Falha ao salvar na VPS.");
+      showToast("Dados salvos e atualizados no cliente!");
+      syncClient(client); // Ressincroniza
     } catch(err) {
-      showToast(`Erro ao agendar: ${err.message}`);
+      showToast(`Erro de conexão: ${err.message}`);
     }
   };
 
-  // --- TELA DE LOGIN MULTI-PERFIL ---
+  const schedulePost = (client, cardId, dateStr) => {
+    if(!dateStr) return showToast("Selecione uma data!");
+    let kanbanArray = client.data?.kanban || [];
+    let found = false;
+    kanbanArray = kanbanArray.map(c => {
+      if(c.id === cardId) { found = true; return { ...c, date: dateStr, col: 'Programados' }; }
+      return c;
+    });
+    if(!found) return showToast("Erro: Card não encontrado.");
+    saveClientData(client, 'kanban', kanbanArray);
+  };
+
+  const handleSaveFin = (client) => {
+    let fins = client.data?.finances || [];
+    if (editingFin.id === 'new') fins = [...fins, { ...editingFin, id: Date.now() }];
+    else fins = fins.map(f => f.id === editingFin.id ? editingFin : f);
+    saveClientData(client, 'finances', fins);
+    setEditingFin(null);
+  };
+
+  // --- LOGIN ---
   if (!currentUser) {
     return (
       <div className="min-h-screen bg-[#0A0F1C] flex items-center justify-center p-4 font-sans text-gray-200">
         <div className="bg-[#111827] p-10 rounded-3xl shadow-2xl border border-gray-800 w-full max-w-md relative overflow-hidden">
-          <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-blue-600 to-cyan-400"></div>
+          <div className="absolute top-0 left-0 w-full h-1" style={gradientStyle}></div>
           <div className="flex justify-center mb-6">
-            <div className="w-16 h-16 bg-blue-600/20 rounded-2xl flex items-center justify-center border border-blue-500/30">
-              <Server className="text-blue-400" size={32} />
-            </div>
+            {masterConfig.logo ? (
+              <img src={masterConfig.logo} alt="Logo" className="h-16 object-contain" />
+            ) : (
+              <div className="w-16 h-16 bg-gray-800 rounded-2xl flex items-center justify-center border border-gray-700">
+                <Server className="text-gray-400" size={32} />
+              </div>
+            )}
           </div>
-          <h1 className="text-3xl font-black text-white text-center mb-2">Painel Master</h1>
-          <p className="text-center text-gray-500 mb-8 text-sm">Azione Marketing - Central de Operações</p>
+          <h1 className="text-3xl font-black text-white text-center mb-2">{masterConfig.companyName}</h1>
+          <p className="text-center text-gray-500 mb-8 text-sm">Central de Operações da Agência</p>
           
           <form onSubmit={(e) => { 
             e.preventDefault(); 
-            const user = e.target.user.value;
-            const pass = e.target.pass.value;
-
+            const user = e.target.user.value; const pass = e.target.pass.value;
             if (user === 'Super' && pass === '9328') setCurrentUser({ role: 'super', name: 'Super Administrador' });
             else if (user === 'master' && pass === 'master123') setCurrentUser({ role: 'master', name: 'Administrador Master' });
             else if (user === 'social' && pass === 'social123') setCurrentUser({ role: 'social', name: 'Social Media' });
@@ -253,36 +241,24 @@ export default function CentralApp() {
           }} className="space-y-4">
             <div>
               <label className="text-xs font-bold text-gray-500 uppercase tracking-widest block mb-2">Usuário Central</label>
-              <input name="user" type="text" placeholder="Super, master ou social" required className="w-full p-4 bg-[#1F2937] border border-gray-700 rounded-xl outline-none focus:border-blue-500 text-white font-mono" />
+              <input name="user" type="text" placeholder="master ou social" required className="w-full p-4 bg-[#1F2937] border border-gray-700 rounded-xl outline-none text-white font-mono focus:border-gray-500" />
             </div>
             <div>
               <label className="text-xs font-bold text-gray-500 uppercase tracking-widest block mb-2">Senha Global</label>
-              <input name="pass" type="password" placeholder="••••••••" required className="w-full p-4 bg-[#1F2937] border border-gray-700 rounded-xl outline-none focus:border-blue-500 text-white font-mono tracking-widest" />
+              <input name="pass" type="password" placeholder="••••••••" required className="w-full p-4 bg-[#1F2937] border border-gray-700 rounded-xl outline-none text-white font-mono tracking-widest focus:border-gray-500" />
             </div>
-            <button type="submit" className="w-full bg-gradient-to-r from-blue-600 to-cyan-600 text-white p-4 rounded-xl font-bold text-lg shadow-lg hover:shadow-cyan-500/25 transition-all mt-2">Acessar Central</button>
+            <button type="submit" className="w-full text-white p-4 rounded-xl font-bold text-lg shadow-lg transition-transform hover:scale-[1.02] mt-2" style={gradientStyle}>Acessar Central</button>
           </form>
-          <div className="text-center text-xs text-gray-600 mt-6 flex flex-col gap-1">
-            <p>Admin: <span className="text-gray-400">master / master123</span></p>
-            <p>Social Media: <span className="text-gray-400">social / social123</span></p>
-          </div>
         </div>
         {toast && <Toast msg={toast} onClose={() => setToast('')} />}
       </div>
     );
   }
 
-  // --- CÁLCULOS GLOBAIS ---
-  // Apenas Master ou Super visualizam métricas e relatórios financeiros
   const isMaster = currentUser.role === 'master' || currentUser.role === 'super';
   const isSuper = currentUser.role === 'super';
   
-  const totalClients = clients.length;
-  const onlineClients = clients.filter(c => c.status === 'online').length;
-  
-  let globalPendencies = 0;
-  let globalLeads = 0;
-  let globalAprovados = 0;
-
+  let globalPendencies = 0; let globalLeads = 0; let globalAprovados = 0;
   clients.forEach(c => {
     if (c.data?.finances) globalPendencies += c.data.finances.filter(f => f.status !== 'Pago').length;
     if (c.data?.reports?.length > 0) globalLeads += Number(c.data.reports[0].leads || 0);
@@ -291,24 +267,29 @@ export default function CentralApp() {
 
   return (
     <div className="min-h-screen bg-[#0B1120] text-gray-300 font-sans flex flex-col relative">
-      {/* Topbar */}
       <header className="bg-[#111827] border-b border-gray-800 p-4 sticky top-0 z-40">
         <div className="max-w-7xl mx-auto flex justify-between items-center">
-          <div className="flex items-center gap-4">
-            <div className="bg-gradient-to-br from-blue-600 to-cyan-500 text-white p-2 rounded-xl">
-              <Globe size={24} />
-            </div>
+          <div className="flex items-center gap-4 cursor-pointer" onClick={() => setMainView('dashboard')}>
+            {masterConfig.logo ? (
+              <img src={masterConfig.logo} alt="Logo" className="h-10 object-contain bg-white/5 p-1 rounded-xl" />
+            ) : (
+              <div className="text-white p-2 rounded-xl" style={gradientStyle}><Globe size={24} /></div>
+            )}
             <div>
-              <h1 className="text-xl font-black text-white leading-none">Azione Master</h1>
-              <span className="text-[10px] uppercase tracking-widest text-cyan-400 font-bold">Perfil: {currentUser.name}</span>
+              <h1 className="text-xl font-black text-white leading-none">{masterConfig.companyName}</h1>
+              <span className="text-[10px] uppercase tracking-widest font-bold" style={{ color: masterConfig.secondaryColor }}>Perfil: {currentUser.name}</span>
             </div>
           </div>
-          <div className="flex gap-4">
-            <button onClick={syncAll} className="flex items-center gap-2 bg-[#1F2937] hover:bg-[#374151] border border-gray-700 px-4 py-2 rounded-lg text-sm font-bold transition-colors">
-              <RefreshCw size={16} className={syncingId ? 'animate-spin text-cyan-400' : 'text-gray-400'} /> 
-              <span className="hidden sm:inline">Sincronizar Todos</span>
+          <div className="flex gap-3">
+            <button onClick={syncAll} className="flex items-center gap-2 bg-[#1F2937] hover:bg-[#374151] border border-gray-700 px-4 py-2 rounded-lg text-sm font-bold transition-colors hidden md:flex">
+              <RefreshCw size={16} className={syncingId ? 'animate-spin text-white' : 'text-gray-400'} /> Sincronizar Todos
             </button>
-            <button onClick={() => setCurrentUser(null)} className="text-red-400 hover:text-red-300 p-2">
+            {isSuper && (
+              <button onClick={() => setMainView(mainView === 'settings' ? 'dashboard' : 'settings')} className={`p-2 rounded-lg transition-colors ${mainView === 'settings' ? 'bg-gray-700 text-white' : 'bg-[#1F2937] hover:bg-[#374151] text-gray-400'}`}>
+                <Settings size={20} />
+              </button>
+            )}
+            <button onClick={() => setCurrentUser(null)} className="text-red-400 hover:text-red-300 p-2 bg-[#1F2937] rounded-lg">
               <LogOut size={20} />
             </button>
           </div>
@@ -317,151 +298,187 @@ export default function CentralApp() {
 
       <main className="flex-1 max-w-7xl mx-auto w-full p-4 md:p-8 space-y-8">
         
-        {/* DASHBOARD CONSOLIDADO */}
-        <section>
-          <h2 className="text-lg font-black text-white mb-4 uppercase tracking-widest flex items-center gap-2">
-            <Activity size={20} className="text-cyan-500"/> Visão Global da Agência
-          </h2>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-            {isMaster && <StatCard title="Clientes Conectados" value={`${onlineClients} / ${totalClients}`} icon={<Server/>} color="text-emerald-400" bg="bg-emerald-400/10" border="border-emerald-500/20" />}
-            {isMaster && <StatCard title="Faturas Pendentes" value={globalPendencies} icon={<DollarSign/>} color="text-rose-400" bg="bg-rose-400/10" border="border-rose-500/20" />}
-            <StatCard title="Aprovados p/ Agendar" value={globalAprovados} icon={<KanbanSquare/>} color="text-amber-400" bg="bg-amber-400/10" border="border-amber-500/20" />
-            {isMaster && <StatCard title="Leads (Últ. Relatório)" value={globalLeads} icon={<TrendingUp/>} color="text-blue-400" bg="bg-blue-400/10" border="border-blue-500/20" />}
-          </div>
-        </section>
-
-        {/* LISTA DE VPS / CLIENTES */}
-        <section>
-          <div className="flex justify-between items-end mb-4">
-            <h2 className="text-lg font-black text-white uppercase tracking-widest flex items-center gap-2">
-              <Users size={20} className="text-blue-500"/> Instâncias (VPS Clientes)
-            </h2>
-            {isSuper && (
-              <button onClick={() => setAddModalOpen(true)} className="bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-lg text-sm font-bold shadow-lg flex items-center gap-2 transition-colors">
-                <Plus size={16} /> <span className="hidden sm:inline">Novo Cliente</span>
-              </button>
-            )}
-          </div>
-
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            {clients.length === 0 && (
-              <div className="col-span-full text-center py-20 bg-[#111827] rounded-3xl border border-gray-800">
-                <Globe size={48} className="mx-auto text-gray-700 mb-4" />
-                <p className="text-gray-400 font-bold text-lg">Nenhum painel de cliente conectado.</p>
+        {/* --- SETTINGS VIEW (SUPER APENAS) --- */}
+        {mainView === 'settings' && isSuper ? (
+          <section className="bg-[#111827] border border-gray-800 rounded-3xl p-8 max-w-3xl mx-auto shadow-2xl">
+            <h2 className="text-2xl font-black text-white mb-6 border-b border-gray-800 pb-4">Ajustes do Master (White-label)</h2>
+            <div className="space-y-6">
+              <div>
+                <label className="text-xs font-bold text-gray-500 uppercase tracking-widest block mb-2">Nome da Agência / Central</label>
+                <input value={masterConfig.companyName} onChange={e => setMasterConfig({...masterConfig, companyName: e.target.value})} className="w-full p-3 bg-[#1F2937] border border-gray-700 rounded-xl outline-none text-white focus:border-gray-500" />
               </div>
-            )}
-            
-            {clients.map(client => (
-              <div key={client.id} onClick={() => { setActiveClientId(client.id); setActiveClientTab('geral'); }} className="bg-[#111827] rounded-2xl border border-gray-800 overflow-hidden flex flex-col relative group hover:border-gray-600 hover:shadow-[0_0_20px_rgba(59,130,246,0.1)] transition-all cursor-pointer">
-                <div className="p-5 border-b border-gray-800 flex justify-between items-start">
-                  <div>
-                    <div className="flex items-center gap-3 mb-1">
-                      <h3 className="text-xl font-black text-white group-hover:text-blue-400 transition-colors">{client.name}</h3>
-                      {client.status === 'online' ? <span className="flex items-center gap-1 text-[10px] font-bold bg-emerald-500/10 text-emerald-400 px-2 py-1 rounded-md uppercase border border-emerald-500/20"><CheckCircle2 size={12}/> Online</span> : 
-                       client.status === 'offline' ? <span className="flex items-center gap-1 text-[10px] font-bold bg-rose-500/10 text-rose-400 px-2 py-1 rounded-md uppercase border border-rose-500/20"><XCircle size={12}/> Erro API</span> :
-                       <span className="text-[10px] font-bold bg-gray-800 text-gray-400 px-2 py-1 rounded-md uppercase border border-gray-700">Não Sincronizado</span>}
-                    </div>
-                    <a href={client.url} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()} className="text-xs text-blue-400 hover:text-blue-300 flex items-center gap-1 mt-1 font-mono">
-                      {client.url} <ExternalLink size={10} />
-                    </a>
-                  </div>
-                  <div className="flex gap-2">
-                    <button onClick={(e) => { e.stopPropagation(); syncClient(client); }} className="p-2 bg-gray-800 hover:bg-gray-700 rounded-lg text-gray-300 transition-colors" title="Sincronizar Dados">
-                      <RefreshCw size={16} className={syncingId === client.id ? 'animate-spin text-cyan-400' : ''} />
-                    </button>
-                    {isSuper && (
-                      <button onClick={(e) => { e.stopPropagation(); if(window.confirm('Remover conexão?')) setClients(clients.filter(c => c.id !== client.id)); }} className="p-2 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 rounded-lg transition-colors" title="Remover Cliente">
-                        <Trash2 size={16} />
-                      </button>
-                    )}
+              <div>
+                <label className="text-xs font-bold text-gray-500 uppercase tracking-widest block mb-2">URL da Logo (Fundo Escuro Recomendado)</label>
+                <input value={masterConfig.logo} onChange={e => setMasterConfig({...masterConfig, logo: e.target.value})} className="w-full p-3 bg-[#1F2937] border border-gray-700 rounded-xl outline-none text-white focus:border-gray-500 text-sm font-mono" placeholder="https://..." />
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div className="bg-[#1F2937] border border-gray-700 p-3 rounded-xl flex items-center justify-between">
+                  <label className="text-xs font-bold text-gray-400 uppercase tracking-widest">Cor Primária</label>
+                  <div className="flex items-center gap-2">
+                    <input type="text" value={masterConfig.primaryColor} onChange={e => setMasterConfig({...masterConfig, primaryColor: e.target.value})} className="bg-transparent w-20 outline-none font-mono text-white text-sm" />
+                    <div className="w-6 h-6 rounded-md border border-gray-600" style={{backgroundColor: masterConfig.primaryColor}}></div>
                   </div>
                 </div>
+                <div className="bg-[#1F2937] border border-gray-700 p-3 rounded-xl flex items-center justify-between">
+                  <label className="text-xs font-bold text-gray-400 uppercase tracking-widest">Cor Secundária</label>
+                  <div className="flex items-center gap-2">
+                    <input type="text" value={masterConfig.secondaryColor} onChange={e => setMasterConfig({...masterConfig, secondaryColor: e.target.value})} className="bg-transparent w-20 outline-none font-mono text-white text-sm" />
+                    <div className="w-6 h-6 rounded-md border border-gray-600" style={{backgroundColor: masterConfig.secondaryColor}}></div>
+                  </div>
+                </div>
+              </div>
+              <div className="pt-4 border-t border-gray-800">
+                <button onClick={() => { setMainView('dashboard'); showToast("Cores e Configurações Aplicadas!"); }} className="w-full text-white p-4 rounded-xl font-bold shadow-lg" style={gradientStyle}>Salvar e Voltar ao Dashboard</button>
+              </div>
+            </div>
+          </section>
+        ) : (
+          /* --- DASHBOARD VIEW --- */
+          <>
+            <section>
+              <h2 className="text-lg font-black text-white mb-4 uppercase tracking-widest flex items-center gap-2" style={{ color: masterConfig.secondaryColor }}>
+                <Activity size={20} /> Visão Global da Agência
+              </h2>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                {isMaster && <StatCard title="Clientes Conectados" value={`${onlineClients}/${totalClients}`} icon={<Server/>} borderColor="border-gray-800" />}
+                {isMaster && <StatCard title="Faturas Pendentes" value={globalPendencies} icon={<DollarSign/>} borderColor={globalPendencies > 0 ? 'border-rose-500/50' : 'border-gray-800'} textColor={globalPendencies > 0 ? 'text-rose-400' : 'text-white'} />}
+                <StatCard title="Aprovados p/ Agendar" value={globalAprovados} icon={<KanbanSquare/>} borderColor="border-gray-800" />
+                {isMaster && <StatCard title="Leads (Últ. Relatório)" value={globalLeads} icon={<TrendingUp/>} borderColor="border-gray-800" />}
+              </div>
+            </section>
 
-                {/* Resumo do Card */}
-                <div className="p-5 flex-1 bg-[#0d131f]">
-                  {client.error ? (
-                    <div className="text-rose-400 text-xs bg-rose-500/10 p-3 rounded-lg border border-rose-500/20 font-mono break-words">
-                      <strong>Falha de Conexão:</strong> {client.error}
-                    </div>
-                  ) : client.data ? (
-                    <div className="grid grid-cols-3 gap-4">
-                      <div className="text-center">
-                        <p className="text-[10px] uppercase font-bold text-gray-500 mb-1">Aprovados</p>
-                        <p className="text-xl font-black text-amber-400">{client.data.kanban?.filter(k => k.col === 'Aprovados').length || 0}</p>
-                      </div>
-                      {isMaster && (
-                        <div className="text-center border-x border-gray-800">
-                          <p className="text-[10px] uppercase font-bold text-gray-500 mb-1">Faturas Abertas</p>
-                          <p className={`text-xl font-black ${client.data.finances?.filter(f => f.status !== 'Pago').length > 0 ? 'text-rose-400' : 'text-emerald-400'}`}>
-                            {client.data.finances?.filter(f => f.status !== 'Pago').length || 0}
-                          </p>
-                        </div>
-                      )}
-                      {isMaster && (
-                        <div className="text-center">
-                          <p className="text-[10px] uppercase font-bold text-gray-500 mb-1">Últimos Leads</p>
-                          <p className="text-xl font-black text-cyan-400">{client.data.reports?.[0]?.leads || 0}</p>
-                        </div>
-                      )}
-                    </div>
-                  ) : (
-                    <div className="text-center text-xs text-gray-600 font-bold uppercase py-4">Aguardando Sincronização...</div>
-                  )}
-                </div>
+            <section>
+              <div className="flex justify-between items-end mb-4">
+                <h2 className="text-lg font-black text-white uppercase tracking-widest flex items-center gap-2" style={{ color: masterConfig.primaryColor }}>
+                  <Users size={20} /> Instâncias (VPS Clientes)
+                </h2>
+                {isSuper && (
+                  <button onClick={() => setAddModalOpen(true)} className="text-white px-4 py-2 rounded-lg text-sm font-bold shadow-lg flex items-center gap-2 transition-transform hover:scale-105" style={primaryBg}>
+                    <Plus size={16} /> <span className="hidden sm:inline">Novo Cliente</span>
+                  </button>
+                )}
+              </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                {clients.length === 0 && (
+                  <div className="col-span-full text-center py-20 bg-[#111827] rounded-3xl border border-gray-800">
+                    <Globe size={48} className="mx-auto text-gray-700 mb-4" />
+                    <p className="text-gray-400 font-bold text-lg">Nenhum painel de cliente conectado.</p>
+                  </div>
+                )}
                 
-                <div className="bg-[#111827] p-3 text-center border-t border-gray-800 text-blue-400 font-bold text-xs uppercase flex items-center justify-center gap-2 group-hover:text-cyan-400 transition-colors">
-                  Ver Detalhes da Conta <ArrowRight size={14}/>
-                </div>
+                {clients.map(client => (
+                  <div key={client.id} onClick={() => { setActiveClientId(client.id); setActiveClientTab('geral'); }} className="bg-[#111827] rounded-2xl border border-gray-800 overflow-hidden flex flex-col relative group hover:border-gray-600 transition-all cursor-pointer shadow-lg">
+                    <div className="p-5 border-b border-gray-800 flex justify-between items-start">
+                      <div>
+                        <div className="flex items-center gap-3 mb-1">
+                          <h3 className="text-xl font-black text-white transition-colors" style={{ color: masterConfig.primaryColor }}>{client.name}</h3>
+                          {client.status === 'online' ? <span className="flex items-center gap-1 text-[10px] font-bold bg-emerald-500/10 text-emerald-400 px-2 py-1 rounded-md uppercase border border-emerald-500/20"><CheckCircle2 size={12}/> Online</span> : 
+                           client.status === 'offline' ? <span className="flex items-center gap-1 text-[10px] font-bold bg-rose-500/10 text-rose-400 px-2 py-1 rounded-md uppercase border border-rose-500/20"><XCircle size={12}/> Erro API</span> :
+                           <span className="text-[10px] font-bold bg-gray-800 text-gray-400 px-2 py-1 rounded-md uppercase border border-gray-700">Não Sincronizado</span>}
+                        </div>
+                        <a href={client.url} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()} className="text-xs text-gray-400 hover:text-white flex items-center gap-1 mt-1 font-mono">
+                          {client.url} <ExternalLink size={10} />
+                        </a>
+                      </div>
+                      <div className="flex gap-2">
+                        <button onClick={(e) => { e.stopPropagation(); syncClient(client); }} className="p-2 bg-gray-800 hover:bg-gray-700 rounded-lg text-gray-300 transition-colors" title="Sincronizar Dados">
+                          <RefreshCw size={16} className={syncingId === client.id ? 'animate-spin text-white' : ''} />
+                        </button>
+                        {isSuper && (
+                          <button onClick={(e) => { e.stopPropagation(); if(window.confirm('Remover conexão?')) setClients(clients.filter(c => c.id !== client.id)); }} className="p-2 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 rounded-lg transition-colors" title="Remover Cliente">
+                            <Trash2 size={16} />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="p-5 flex-1 bg-[#0d131f]">
+                      {client.error ? (
+                        <div className="text-rose-400 text-xs bg-rose-500/10 p-3 rounded-lg border border-rose-500/20 font-mono break-words">
+                          <strong>Falha de Conexão:</strong> {client.error}
+                        </div>
+                      ) : client.data ? (
+                        <div className="grid grid-cols-3 gap-4">
+                          <div className="text-center">
+                            <p className="text-[10px] uppercase font-bold text-gray-500 mb-1">Aprovados</p>
+                            <p className="text-xl font-black text-amber-400">{client.data.kanban?.filter(k => k.col === 'Aprovados').length || 0}</p>
+                          </div>
+                          {isMaster && (
+                            <div className="text-center border-x border-gray-800">
+                              <p className="text-[10px] uppercase font-bold text-gray-500 mb-1">Faturas Abertas</p>
+                              <p className={`text-xl font-black ${client.data.finances?.filter(f => f.status !== 'Pago').length > 0 ? 'text-rose-400' : 'text-emerald-400'}`}>
+                                {client.data.finances?.filter(f => f.status !== 'Pago').length || 0}
+                              </p>
+                            </div>
+                          )}
+                          {isMaster && (
+                            <div className="text-center">
+                              <p className="text-[10px] uppercase font-bold text-gray-500 mb-1">Últimos Leads</p>
+                              <p className="text-xl font-black" style={{ color: masterConfig.secondaryColor }}>{client.data.reports?.[0]?.leads || 0}</p>
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        <div className="text-center text-xs text-gray-600 font-bold uppercase py-4">Aguardando Sincronização...</div>
+                      )}
+                    </div>
+                    
+                    <div className="bg-[#111827] p-3 text-center border-t border-gray-800 text-gray-400 font-bold text-xs uppercase flex items-center justify-center gap-2 group-hover:text-white transition-colors">
+                      Ver Detalhes da Conta <ArrowRight size={14}/>
+                    </div>
+                  </div>
+                ))}
               </div>
-            ))}
-          </div>
-        </section>
+            </section>
+          </>
+        )}
       </main>
 
       {/* --- MODAL DE DETALHES DO CLIENTE --- */}
       {activeClient && (
         <div className="fixed inset-0 bg-black/90 backdrop-blur-md flex items-center justify-center p-4 z-50 overflow-y-auto">
-          <div className="bg-[#111827] rounded-3xl w-full max-w-5xl border border-gray-700 shadow-[0_0_50px_rgba(0,0,0,0.5)] flex flex-col max-h-[90vh]">
+          <div className="bg-[#111827] rounded-3xl w-full max-w-5xl border border-gray-700 shadow-[0_0_50px_rgba(0,0,0,0.5)] flex flex-col max-h-[90vh] overflow-hidden">
             
-            <div className="p-6 border-b border-gray-800 flex justify-between items-center bg-[#0d131f] rounded-t-3xl">
+            <div className="p-6 border-b border-gray-800 flex flex-col md:flex-row md:justify-between md:items-center gap-4 bg-[#0d131f] flex-shrink-0">
               <div>
                 <h2 className="text-2xl font-black text-white flex items-center gap-3">
                   {activeClient.name}
                   {activeClient.status === 'online' && <span className="text-[10px] font-bold bg-emerald-500/10 text-emerald-400 px-2 py-1 rounded-md uppercase border border-emerald-500/20">Online</span>}
                 </h2>
-                <a href={activeClient.url} target="_blank" rel="noreferrer" className="text-sm text-blue-500 hover:text-blue-400 mt-1 inline-flex items-center gap-1 font-mono">
+                <a href={activeClient.url} target="_blank" rel="noreferrer" className="text-sm text-gray-500 hover:text-gray-300 mt-1 inline-flex items-center gap-1 font-mono">
                   {activeClient.url} <ExternalLink size={12}/>
                 </a>
               </div>
-              <div className="flex gap-4">
-                 {isMaster && activeClient.data?.config?.lookerStudioUrl && (
-                  <div className="flex bg-gray-800/50 p-1 rounded-xl">
-                    <button onClick={() => setActiveClientTab('geral')} className={`px-4 py-2 rounded-lg text-sm font-bold transition-all ${activeClientTab === 'geral' ? 'bg-blue-600 text-white shadow-sm' : 'text-gray-400 hover:text-white'}`}>Visão Geral</button>
-                    <button onClick={() => setActiveClientTab('looker')} className={`px-4 py-2 rounded-lg text-sm font-bold transition-all flex items-center gap-2 ${activeClientTab === 'looker' ? 'bg-blue-600 text-white shadow-sm' : 'text-gray-400 hover:text-white'}`}>
-                      <BarChart3 size={16}/> Looker Studio
-                    </button>
-                  </div>
+              <div className="flex flex-wrap gap-2">
+                <button onClick={() => setActiveClientTab('geral')} className={`px-4 py-2 rounded-lg text-sm font-bold transition-all ${activeClientTab === 'geral' ? 'text-white' : 'bg-[#1F2937] text-gray-400 hover:bg-gray-700'}`} style={activeClientTab === 'geral' ? primaryBg : {}}>Mídias e Relatórios</button>
+                {isMaster && (
+                  <button onClick={() => setActiveClientTab('finance')} className={`px-4 py-2 rounded-lg text-sm font-bold transition-all flex items-center gap-2 ${activeClientTab === 'finance' ? 'text-white' : 'bg-[#1F2937] text-gray-400 hover:bg-gray-700'}`} style={activeClientTab === 'finance' ? primaryBg : {}}>
+                    <CreditCard size={16}/> Financeiro & Docs
+                  </button>
                 )}
-                <button onClick={() => setActiveClientId(null)} className="p-2 bg-gray-800 hover:bg-gray-700 text-gray-400 rounded-xl transition-colors h-fit"><X size={20}/></button>
+                {isMaster && activeClient.data?.config?.lookerStudioUrl && (
+                  <button onClick={() => setActiveClientTab('looker')} className={`px-4 py-2 rounded-lg text-sm font-bold transition-all flex items-center gap-2 ${activeClientTab === 'looker' ? 'text-white' : 'bg-[#1F2937] text-gray-400 hover:bg-gray-700'}`} style={activeClientTab === 'looker' ? primaryBg : {}}>
+                    <BarChart3 size={16}/> Looker Studio
+                  </button>
+                )}
+                <div className="w-px bg-gray-700 mx-1 hidden md:block"></div>
+                <button onClick={() => setActiveClientId(null)} className="px-4 py-2 bg-rose-500/10 text-rose-400 hover:bg-rose-500/20 rounded-lg transition-colors font-bold">Fechar</button>
               </div>
             </div>
 
-            <div className="p-6 overflow-y-auto space-y-8 flex-1 custom-scrollbar">
+            <div className="p-6 overflow-y-auto flex-1 custom-scrollbar space-y-8 relative">
               
-              {/* ABA: VISÃO GERAL (Social Media e Resumo Financeiro) */}
+              {/* ABA GERAL: APROVADOS E TRÁFEGO */}
               {activeClientTab === 'geral' && (
                 <>
-                  {/* SESSÃO: SOCIAL MEDIA (Posts Aprovados para Agendar) */}
                   <section>
                     <div className="flex items-center gap-2 border-b border-gray-800 pb-3 mb-4">
                       <CalendarDays className="text-amber-400"/>
-                      <h3 className="text-lg font-black text-white uppercase tracking-widest">Ações: Posts Aprovados (Aguardando Agendamento)</h3>
+                      <h3 className="text-lg font-black text-white uppercase tracking-widest">Ações: Posts Aprovados (Aguardando)</h3>
                     </div>
-                    
                     {(!activeClient.data?.kanban || activeClient.data.kanban.filter(k => k.col === 'Aprovados').length === 0) ? (
-                      <div className="text-center py-10 bg-[#0d131f] rounded-2xl border border-gray-800 text-gray-500 font-bold">
-                        Nenhum post aguardando agendamento na coluna "Aprovados".
-                      </div>
+                      <div className="text-center py-8 bg-[#0d131f] rounded-2xl border border-gray-800 text-gray-500 font-bold">Nenhum post aguardando agendamento.</div>
                     ) : (
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                         {activeClient.data.kanban.filter(k => k.col === 'Aprovados').map(card => {
@@ -475,10 +492,8 @@ export default function CentralApp() {
                               <div className="bg-[#111827] p-3 rounded-xl border border-gray-800">
                                 <label className="text-[10px] text-gray-500 font-bold uppercase tracking-widest block mb-2">Definir Data de Postagem</label>
                                 <div className="flex gap-2">
-                                  <input type="date" onChange={e => selectedDate = e.target.value} className="flex-1 bg-[#1F2937] border border-gray-700 text-white rounded-lg p-2 text-sm outline-none focus:border-blue-500" />
-                                  <button onClick={() => schedulePost(activeClient, card.id, selectedDate)} className="bg-blue-600 hover:bg-blue-500 text-white font-bold px-4 py-2 rounded-lg text-sm transition-colors shadow-lg">
-                                    Programar
-                                  </button>
+                                  <input type="date" onChange={e => selectedDate = e.target.value} className="flex-1 bg-[#1F2937] border border-gray-700 text-white rounded-lg p-2 text-sm outline-none" />
+                                  <button onClick={() => schedulePost(activeClient, card.id, selectedDate)} className="text-white font-bold px-4 py-2 rounded-lg text-sm shadow-lg" style={primaryBg}>Programar</button>
                                 </div>
                               </div>
                             </div>
@@ -488,18 +503,14 @@ export default function CentralApp() {
                     )}
                   </section>
 
-                  {/* SESSÃO: MASTER (Tráfego e Relatórios) */}
                   {isMaster && (
                     <section>
                       <div className="flex items-center gap-2 border-b border-gray-800 pb-3 mb-4 mt-8">
-                        <TrendingUp className="text-cyan-400"/>
-                        <h3 className="text-lg font-black text-white uppercase tracking-widest">Inteligência: Últimos Relatórios de Tráfego</h3>
+                        <TrendingUp style={{ color: masterConfig.secondaryColor }}/>
+                        <h3 className="text-lg font-black text-white uppercase tracking-widest">Últimos Relatórios de Tráfego</h3>
                       </div>
-
                       {(!activeClient.data?.reports || activeClient.data.reports.length === 0) ? (
-                        <div className="text-center py-10 bg-[#0d131f] rounded-2xl border border-gray-800 text-gray-500 font-bold">
-                          Nenhum relatório cadastrado para este cliente.
-                        </div>
+                        <div className="text-center py-8 bg-[#0d131f] rounded-2xl border border-gray-800 text-gray-500 font-bold">Nenhum relatório na VPS deste cliente.</div>
                       ) : (
                         <div className="space-y-4">
                           {activeClient.data.reports.slice(0, 3).map(rep => (
@@ -507,7 +518,7 @@ export default function CentralApp() {
                               <div>
                                 <p className="text-[10px] text-gray-500 font-bold uppercase tracking-widest mb-1">Referência: {new Date(rep.date).toLocaleDateString('pt-BR')}</p>
                                 <div className="flex gap-6 mt-2">
-                                  <div><span className="text-xs text-gray-400 block">Leads</span><span className="font-black text-cyan-400 text-lg">{rep.leads}</span></div>
+                                  <div><span className="text-xs text-gray-400 block">Leads</span><span className="font-black text-lg" style={{ color: masterConfig.secondaryColor }}>{rep.leads}</span></div>
                                   <div><span className="text-xs text-gray-400 block">Custo/Lead</span><span className="font-black text-white text-lg">R$ {rep.cost}</span></div>
                                   <div><span className="text-xs text-gray-400 block">Contratos</span><span className="font-black text-emerald-400 text-lg">{rep.contracts}</span></div>
                                 </div>
@@ -526,24 +537,140 @@ export default function CentralApp() {
                 </>
               )}
 
+              {/* ABA: FINANCEIRO E DOCS */}
+              {activeClientTab === 'finance' && isMaster && (
+                <div className="space-y-8">
+                  {/* Gestão de Faturas */}
+                  <section>
+                    <div className="flex items-center justify-between border-b border-gray-800 pb-3 mb-4">
+                      <h3 className="text-lg font-black text-white uppercase tracking-widest flex items-center gap-2"><DollarSign className="text-emerald-400"/> Faturas e Cobranças</h3>
+                      <button onClick={() => setEditingFin({ id: 'new', desc: 'Nova Fatura', due: '', pix: '', boleto: '', nf: '', status: 'Pendente' })} className="text-white text-xs font-bold px-4 py-2 rounded-lg flex items-center gap-2" style={primaryBg}>
+                        <Plus size={14}/> Adicionar Fatura
+                      </button>
+                    </div>
+                    <div className="bg-[#1F2937] border border-gray-700 rounded-2xl overflow-hidden">
+                      <table className="w-full text-left border-collapse">
+                        <thead>
+                          <tr className="bg-gray-800/50 text-xs uppercase tracking-widest text-gray-500 border-b border-gray-700">
+                            <th className="p-4">Descrição</th><th className="p-4">Status</th><th className="p-4 text-right">Ações</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {(activeClient.data?.finances || []).map((fin) => (
+                            <tr key={fin.id} className="border-b border-gray-800 last:border-0 hover:bg-gray-800/20">
+                              <td className="p-4 font-bold text-white text-sm">{fin.desc} <span className="block text-gray-500 text-xs font-normal mt-0.5">Venc: {fin.due ? new Date(fin.due).toLocaleDateString('pt-BR') : 'S/ Data'}</span></td>
+                              <td className="p-4">
+                                <button onClick={() => {
+                                  const newStatus = fin.status === 'Pago' ? 'Pendente' : 'Pago';
+                                  const updatedFins = activeClient.data.finances.map(f => f.id === fin.id ? {...f, status: newStatus} : f);
+                                  saveClientData(activeClient, 'finances', updatedFins);
+                                }} className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest border transition-colors ${fin.status === 'Pago' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20 hover:bg-emerald-500/20' : 'bg-rose-500/10 text-rose-400 border-rose-500/20 hover:bg-rose-500/20'}`}>
+                                  {fin.status || 'Pendente'} (Trocar)
+                                </button>
+                              </td>
+                              <td className="p-4 flex gap-2 justify-end">
+                                <button onClick={() => setEditingFin(fin)} className="p-2 bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-lg"><Edit3 size={14}/></button>
+                                <button onClick={() => {
+                                  if(window.confirm('Apagar fatura no cliente?')) saveClientData(activeClient, 'finances', activeClient.data.finances.filter(f => f.id !== fin.id));
+                                }} className="p-2 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 rounded-lg"><Trash2 size={14}/></button>
+                              </td>
+                            </tr>
+                          ))}
+                          {(!activeClient.data?.finances || activeClient.data.finances.length === 0) && <tr><td colSpan="3" className="p-8 text-center text-gray-500 text-sm font-bold">Nenhuma fatura cadastrada para este cliente.</td></tr>}
+                        </tbody>
+                      </table>
+                    </div>
+                  </section>
+
+                  {/* Gestão de Documentos */}
+                  <section>
+                    <div className="flex items-center justify-between border-b border-gray-800 pb-3 mb-4">
+                      <h3 className="text-lg font-black text-white uppercase tracking-widest flex items-center gap-2"><FileText className="text-gray-400"/> Documentos Legais</h3>
+                      <button onClick={() => {
+                        const title = prompt("Título do Documento:");
+                        const link = prompt("Link do PDF (Drive):");
+                        if(title && link) saveClientData(activeClient, 'docs', [...(activeClient.data?.docs||[]), {id: Date.now(), title, link, date: new Date().toISOString()}]);
+                      }} className="bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs font-bold px-4 py-2 rounded-lg flex items-center gap-2 transition-colors">
+                        <Plus size={14}/> Novo Doc
+                      </button>
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      {(activeClient.data?.docs || []).map(doc => (
+                        <div key={doc.id} className="bg-[#1F2937] border border-gray-700 p-4 rounded-xl flex items-center justify-between">
+                          <div>
+                            <h4 className="font-bold text-white text-sm">{doc.title}</h4>
+                            <p className="text-[10px] text-gray-500 uppercase mt-1">Add: {new Date(doc.date).toLocaleDateString('pt-BR')}</p>
+                          </div>
+                          <div className="flex gap-2">
+                            <a href={doc.link} target="_blank" rel="noreferrer" className="p-2 bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-lg"><ExternalLink size={14}/></a>
+                            <button onClick={() => {
+                              if(window.confirm('Apagar documento?')) saveClientData(activeClient, 'docs', activeClient.data.docs.filter(d => d.id !== doc.id));
+                            }} className="p-2 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 rounded-lg"><Trash2 size={14}/></button>
+                          </div>
+                        </div>
+                      ))}
+                      {(!activeClient.data?.docs || activeClient.data.docs.length === 0) && <div className="col-span-full py-6 text-center text-gray-500 text-sm font-bold bg-[#1F2937] rounded-xl border border-gray-700">Sem documentos cadastrados.</div>}
+                    </div>
+                  </section>
+                </div>
+              )}
+
               {/* ABA: LOOKER STUDIO */}
               {activeClientTab === 'looker' && isMaster && (
-                <div className="flex flex-col h-full min-h-[600px] bg-white rounded-2xl overflow-hidden relative">
-                   <div className="bg-yellow-50 p-3 text-center text-xs font-bold text-yellow-700 border-b border-yellow-200 flex flex-col md:flex-row justify-center items-center gap-2">
-                    <span className="text-xl">⚠️</span> 
-                    <span>Lembrete: O cliente precisa ativar a incorporação no Looker Studio (Arquivo &gt; Incorporar Relatório).</span>
+                <div className="flex flex-col h-[75vh] bg-white rounded-2xl overflow-hidden relative border border-gray-700">
+                   <div className="bg-yellow-50 p-2 text-center text-[10px] font-bold text-yellow-700 border-b border-yellow-200">
+                    ⚠️ Lembrete: O cliente precisa ter ativado a incorporação no Looker Studio.
                   </div>
-                  <iframe 
-                    src={getEmbedUrl(activeClient.data?.config?.lookerStudioUrl)} 
-                    frameBorder="0" 
-                    style={{ border: 0 }} 
-                    allowFullScreen 
-                    className="w-full h-full flex-1 min-h-[700px]">
-                  </iframe>
+                  <iframe src={getEmbedUrl(activeClient.data?.config?.lookerStudioUrl)} frameBorder="0" style={{ border: 0 }} allowFullScreen className="w-full h-full flex-1"></iframe>
                 </div>
               )}
 
             </div>
+
+            {/* OVERLAY PARA EDIÇÃO DE FATURA */}
+            {editingFin && (
+              <div className="absolute inset-0 bg-[#0d131f]/95 backdrop-blur-md z-10 flex items-center justify-center p-6">
+                 <div className="bg-[#111827] rounded-3xl p-8 w-full max-w-md border border-gray-700 shadow-2xl">
+                    <h3 className="text-xl font-black text-white mb-6 border-b border-gray-800 pb-3 flex justify-between items-center">
+                      Detalhes da Fatura <button onClick={()=>setEditingFin(null)} className="text-gray-500 hover:text-white"><X size={20}/></button>
+                    </h3>
+                    <div className="space-y-4">
+                      <div>
+                        <label className="text-[10px] font-bold text-gray-400 uppercase mb-1 block">Descrição</label>
+                        <input value={editingFin.desc} onChange={e => setEditingFin({...editingFin, desc: e.target.value})} className="w-full p-3 bg-[#1F2937] border border-gray-700 rounded-xl outline-none text-white text-sm" />
+                      </div>
+                      <div className="grid grid-cols-2 gap-4">
+                        <div>
+                          <label className="text-[10px] font-bold text-gray-400 uppercase mb-1 block">Vencimento</label>
+                          <input type="date" value={editingFin.due} onChange={e => setEditingFin({...editingFin, due: e.target.value})} className="w-full p-3 bg-[#1F2937] border border-gray-700 rounded-xl outline-none text-white text-sm" />
+                        </div>
+                        <div>
+                          <label className="text-[10px] font-bold text-gray-400 uppercase mb-1 block">Status</label>
+                          <select value={editingFin.status || 'Pendente'} onChange={e => setEditingFin({...editingFin, status: e.target.value})} className="w-full p-3 bg-[#1F2937] border border-gray-700 rounded-xl outline-none text-white text-sm font-bold">
+                            <option value="Pendente">Pendente</option><option value="Pago">Pago</option>
+                          </select>
+                        </div>
+                      </div>
+                      <div>
+                        <label className="text-[10px] font-bold text-gray-400 uppercase mb-1 block">Chave PIX</label>
+                        <input value={editingFin.pix} onChange={e => setEditingFin({...editingFin, pix: e.target.value})} className="w-full p-3 bg-[#1F2937] border border-gray-700 rounded-xl outline-none text-white text-sm font-mono" />
+                      </div>
+                      <div>
+                        <label className="text-[10px] font-bold text-gray-400 uppercase mb-1 block">Link do Boleto (Drive/PDF)</label>
+                        <input value={editingFin.boleto} onChange={e => setEditingFin({...editingFin, boleto: e.target.value})} className="w-full p-3 bg-[#1F2937] border border-gray-700 rounded-xl outline-none text-white text-sm" />
+                      </div>
+                      <div>
+                        <label className="text-[10px] font-bold text-gray-400 uppercase mb-1 block">Link da Nota Fiscal (Drive/PDF)</label>
+                        <input value={editingFin.nf} onChange={e => setEditingFin({...editingFin, nf: e.target.value})} className="w-full p-3 bg-[#1F2937] border border-gray-700 rounded-xl outline-none text-white text-sm" />
+                      </div>
+                      <div className="pt-4 flex gap-3">
+                        <button onClick={()=>setEditingFin(null)} className="flex-1 p-3 rounded-xl font-bold bg-gray-800 text-gray-400 hover:text-white">Cancelar</button>
+                        <button onClick={()=>handleSaveFin(activeClient)} className="flex-1 p-3 rounded-xl font-bold text-white shadow-lg" style={primaryBg}>Salvar Fatura</button>
+                      </div>
+                    </div>
+                 </div>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -553,7 +680,7 @@ export default function CentralApp() {
         <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 z-50">
           <div className="bg-[#111827] rounded-3xl p-8 w-full max-w-md border border-gray-700 shadow-2xl">
             <h3 className="text-2xl font-black text-white mb-6 flex items-center gap-3">
-              <Globe className="text-blue-500"/> Conectar Novo Cliente
+              <Globe style={{ color: masterConfig.primaryColor }}/> Conectar Novo Cliente
             </h3>
             
             <form onSubmit={(e) => {
@@ -567,7 +694,6 @@ export default function CentralApp() {
                 status: 'pending',
                 data: null
               };
-              
               setClients(prevClients => [...prevClients, newClient]);
               setAddModalOpen(false);
               syncClient(newClient); 
@@ -575,12 +701,12 @@ export default function CentralApp() {
               
               <div>
                 <label className="text-xs font-bold text-gray-400 uppercase mb-1 block">Nome do Cliente</label>
-                <input name="nome" required placeholder="Ex: Agmaq Agro" className="w-full p-3 bg-[#1F2937] border border-gray-700 rounded-xl outline-none focus:border-blue-500 text-white" />
+                <input name="nome" required placeholder="Ex: Agmaq Agro" className="w-full p-3 bg-[#1F2937] border border-gray-700 rounded-xl outline-none text-white focus:border-gray-500" />
               </div>
               
               <div>
                 <label className="text-xs font-bold text-gray-400 uppercase mb-1 block">URL do Painel (VPS)</label>
-                <input name="url" required placeholder="https://painel-cliente.com" className="w-full p-3 bg-[#1F2937] border border-gray-700 rounded-xl outline-none focus:border-blue-500 text-white font-mono text-sm" />
+                <input name="url" required placeholder="https://painel-cliente.com" className="w-full p-3 bg-[#1F2937] border border-gray-700 rounded-xl outline-none text-white font-mono text-sm focus:border-gray-500" />
               </div>
 
               <div className="grid grid-cols-2 gap-4 pt-2 border-t border-gray-800 mt-4">
@@ -589,17 +715,17 @@ export default function CentralApp() {
                 </div>
                 <div>
                   <label className="text-xs font-bold text-gray-400 uppercase mb-1 block">Usuário</label>
-                  <input name="login" required placeholder="admin" defaultValue="admin" className="w-full p-3 bg-[#1F2937] border border-gray-700 rounded-xl outline-none focus:border-blue-500 text-white" />
+                  <input name="login" required placeholder="admin" defaultValue="admin" className="w-full p-3 bg-[#1F2937] border border-gray-700 rounded-xl outline-none text-white focus:border-gray-500" />
                 </div>
                 <div>
                   <label className="text-xs font-bold text-gray-400 uppercase mb-1 block">Senha</label>
-                  <input name="pass" type="password" required placeholder="***" defaultValue="admin123" className="w-full p-3 bg-[#1F2937] border border-gray-700 rounded-xl outline-none focus:border-blue-500 text-white" />
+                  <input name="pass" type="password" required placeholder="***" defaultValue="admin123" className="w-full p-3 bg-[#1F2937] border border-gray-700 rounded-xl outline-none text-white focus:border-gray-500" />
                 </div>
               </div>
 
               <div className="flex gap-3 pt-6">
                 <button type="button" onClick={() => setAddModalOpen(false)} className="flex-1 p-3 rounded-xl font-bold text-gray-400 bg-gray-800 hover:bg-gray-700 transition-colors">Cancelar</button>
-                <button type="submit" className="flex-1 p-3 rounded-xl font-bold text-white bg-blue-600 hover:bg-blue-500 transition-colors shadow-lg shadow-blue-900/50">Conectar</button>
+                <button type="submit" className="flex-1 p-3 rounded-xl font-bold text-white shadow-lg shadow-blue-900/20" style={primaryBg}>Conectar</button>
               </div>
             </form>
           </div>
@@ -612,14 +738,14 @@ export default function CentralApp() {
 }
 
 // Subcomponente de Estatística
-function StatCard({ title, value, icon, color, bg, border }) {
+function StatCard({ title, value, icon, color="text-white", borderColor, textColor="text-white" }) {
   return (
-    <div className={`p-5 rounded-2xl border ${border} ${bg} flex flex-col justify-between shadow-lg`}>
+    <div className={`p-5 rounded-2xl border ${borderColor} bg-[#111827] flex flex-col justify-between shadow-lg`}>
       <div className="flex justify-between items-start mb-3">
-        <span className={`p-2.5 rounded-xl bg-[#111827] border ${border} ${color}`}>{icon}</span>
+        <span className={`p-2.5 rounded-xl bg-[#1F2937] border ${borderColor} ${color}`}>{icon}</span>
       </div>
       <div>
-        <h3 className="text-3xl font-black text-white mb-1">{value}</h3>
+        <h3 className={`text-3xl font-black mb-1 ${textColor}`}>{value}</h3>
         <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest leading-tight">{title}</p>
       </div>
     </div>
