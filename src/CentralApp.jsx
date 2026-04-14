@@ -93,8 +93,17 @@ export default function CentralApp() {
         const dataUsers = await resUsers.json();
         
         // Proteção contra Null caso o cliente não tenha salvo nada no banco ainda
-        const usersArray = dataUsers?.data && Array.isArray(dataUsers.data) ? dataUsers.data : (Array.isArray(dataUsers) ? dataUsers : []);
+        let usersArray = dataUsers?.data && Array.isArray(dataUsers.data) ? dataUsers.data : (Array.isArray(dataUsers) ? dataUsers : []);
         
+        // CORREÇÃO: Se a VPS for recém-instalada, o banco de dados estará vazio. 
+        // Nesse caso, o Master confia nas credenciais padrão para conectar a primeira vez.
+        if (usersArray.length === 0) {
+          usersArray = [
+            { login: 'gestor', pass: 'gestor123', role: 'administrador' },
+            { login: 'admin', pass: 'admin123', role: 'administrador' }
+          ];
+        }
+
         const isValid = usersArray.find(u => u.login === client.login && u.pass === client.pass && ['gestor', 'administrador'].includes(u.role));
         if (!isValid) throw new Error("Acesso Negado: Senha incorreta ou sem permissão de Admin.");
 
