@@ -121,7 +121,7 @@ export default function CentralApp() {
   const [syncingId, setSyncingId] = useState(null);
   const [addModalOpen, setAddModalOpen] = useState(false);
   const [activeClientId, setActiveClientId] = useState(null);
-  const [activeClientTab, setActiveClientTab] = useState('geral'); // geral | looker | financeiro
+  const [activeClientTab, setActiveClientTab] = useState('geral'); // geral | kanban | looker | financeiro
   const [editingFin, setEditingFin] = useState(null);
 
   const showToast = (msg) => setToast(msg);
@@ -251,6 +251,22 @@ export default function CentralApp() {
     else fins = fins.map(f => f.id === editingFin.id ? editingFin : f);
     saveClientData(client, 'finances', fins);
     setEditingFin(null);
+  };
+
+  // --- LÓGICA DO DRAG & DROP DO KANBAN ---
+  const kanbanColumns = ['Ideias', 'Produção', 'Finalizados', 'Aprovados', 'Rejeitados', 'Programados', 'Postados'];
+  
+  const onDragStart = (e, id) => {
+    e.dataTransfer.setData('cardId', id);
+  };
+  
+  const onDragOver = (e) => e.preventDefault();
+  
+  const onDrop = (e, col, client) => {
+    const cardId = e.dataTransfer.getData('cardId');
+    let kanbanArray = safeArray(client.data?.kanban);
+    const updated = kanbanArray.map(c => c.id === cardId ? { ...c, col } : c);
+    saveClientData(client, 'kanban', updated);
   };
 
   // --- LOGIN ---
@@ -506,6 +522,12 @@ export default function CentralApp() {
               </div>
               <div className="flex flex-wrap gap-2">
                 <button onClick={() => setActiveClientTab('geral')} className={`px-4 py-2 rounded-lg text-sm font-bold transition-all ${activeClientTab === 'geral' ? 'text-white' : 'bg-[#1F2937] text-gray-400 hover:bg-gray-700'}`} style={activeClientTab === 'geral' ? primaryBg : {}}>Mídias e Relatórios</button>
+                
+                {/* NOVO BOTÃO: ESTEIRA KANBAN (Acesso Liberado a Todos) */}
+                <button onClick={() => setActiveClientTab('kanban')} className={`px-4 py-2 rounded-lg text-sm font-bold transition-all flex items-center gap-2 ${activeClientTab === 'kanban' ? 'text-white' : 'bg-[#1F2937] text-gray-400 hover:bg-gray-700'}`} style={activeClientTab === 'kanban' ? primaryBg : {}}>
+                  <KanbanSquare size={16}/> Esteira Kanban
+                </button>
+
                 {isMaster && (
                   <button onClick={() => setActiveClientTab('finance')} className={`px-4 py-2 rounded-lg text-sm font-bold transition-all flex items-center gap-2 ${activeClientTab === 'finance' ? 'text-white' : 'bg-[#1F2937] text-gray-400 hover:bg-gray-700'}`} style={activeClientTab === 'finance' ? primaryBg : {}}>
                     <CreditCard size={16}/> Financeiro & Docs
@@ -589,6 +611,45 @@ export default function CentralApp() {
                     </section>
                   )}
                 </>
+              )}
+
+              {/* NOVA ABA: ESTEIRA KANBAN MIRROR */}
+              {activeClientTab === 'kanban' && (
+                <div className="h-[65vh] flex flex-col">
+                  <div className="flex gap-4 overflow-x-auto pb-4 flex-1 items-start snap-x custom-scrollbar">
+                    {kanbanColumns.map(col => (
+                      <div key={col} 
+                           className="bg-[#1F2937] border border-gray-700 min-w-[280px] w-[280px] rounded-2xl p-4 flex flex-col max-h-full snap-start"
+                           onDragOver={onDragOver}
+                           onDrop={(e) => onDrop(e, col, activeClient)}>
+                        <div className="flex justify-between items-center mb-4 pb-2 border-b border-gray-700">
+                          <h3 className="font-bold text-white text-sm">{col}</h3>
+                          <span className="text-xs font-bold px-2 py-1 rounded-full bg-gray-800 text-gray-400 border border-gray-600 shadow-inner">
+                            {safeArray(activeClient.data?.kanban).filter(c => c.col === col).length}
+                          </span>
+                        </div>
+                        <div className="flex flex-col gap-3 overflow-y-auto pr-1 custom-scrollbar">
+                          {safeArray(activeClient.data?.kanban).filter(c => c.col === col).map(card => (
+                            <div key={card.id} 
+                                 draggable 
+                                 onDragStart={(e) => onDragStart(e, card.id)} 
+                                 className="bg-[#111827] p-4 rounded-xl border border-gray-700 cursor-grab active:cursor-grabbing hover:border-blue-500 transition-colors shadow-md">
+                              <h4 className="font-bold text-white text-sm mb-2">{card.title}</h4>
+                              <p className="text-xs text-gray-400 line-clamp-2 mb-3">{card.desc || card.caption || 'Sem descrição/legenda.'}</p>
+                              <div className="flex items-center justify-between mt-2 pt-2 border-t border-gray-800">
+                                 <span className="text-[10px] text-gray-500 font-bold uppercase">{card.col}</span>
+                                 {card.date ? <span className="text-[10px] text-amber-400 font-bold bg-amber-400/10 px-2 py-1 rounded border border-amber-500/20">📅 {formatSafeDate(card.date)}</span> : <span className="text-[10px] text-gray-600">Sem data</span>}
+                              </div>
+                            </div>
+                          ))}
+                          {safeArray(activeClient.data?.kanban).filter(c => c.col === col).length === 0 && (
+                            <div className="text-center py-6 text-gray-600 text-xs font-bold uppercase tracking-widest border-2 border-dashed border-gray-700 rounded-xl">Vazio</div>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
               )}
 
               {/* ABA: FINANCEIRO E DOCS */}
