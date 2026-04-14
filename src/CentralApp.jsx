@@ -3,7 +3,7 @@ import {
   Server, Globe, RefreshCw, Users, KanbanSquare, 
   DollarSign, TrendingUp, Plus, X, ExternalLink, 
   CheckCircle2, XCircle, ShieldCheck, Activity,
-  Trash2, LogOut // Ícones que estavam faltando e causavam a tela branca
+  Trash2, LogOut 
 } from 'lucide-react';
 
 // --- HOOK DE PERSISTÊNCIA LOCAL (Para o Painel Master) ---
@@ -91,7 +91,9 @@ export default function CentralApp() {
         if (!resUsers.ok) throw new Error("VPS Inacessível (Erro 404/500)");
         
         const dataUsers = await resUsers.json();
-        const usersArray = Array.isArray(dataUsers.data) ? dataUsers.data : [];
+        
+        // Proteção contra Null caso o cliente não tenha salvo nada no banco ainda
+        const usersArray = dataUsers?.data && Array.isArray(dataUsers.data) ? dataUsers.data : (Array.isArray(dataUsers) ? dataUsers : []);
         
         const isValid = usersArray.find(u => u.login === client.login && u.pass === client.pass && ['gestor', 'administrador'].includes(u.role));
         if (!isValid) throw new Error("Acesso Negado: Senha incorreta ou sem permissão de Admin.");
@@ -103,9 +105,14 @@ export default function CentralApp() {
           fetch(`${urlBase}/api/data/reports`)
         ]);
 
-        kanbanData = (await resK.json()).data || [];
-        financesData = (await resF.json()).data || [];
-        reportsData = (await resR.json()).data || [];
+        const jsonK = await resK.json();
+        const jsonF = await resF.json();
+        const jsonR = await resR.json();
+
+        // Proteção Extra contra bancos de dados vazios (Null)
+        kanbanData = jsonK?.data || (Array.isArray(jsonK) ? jsonK : []);
+        financesData = jsonF?.data || (Array.isArray(jsonF) ? jsonF : []);
+        reportsData = jsonR?.data || (Array.isArray(jsonR) ? jsonR : []);
       }
 
       // 3. Atualiza o estado central com os dados daquele cliente
@@ -223,7 +230,7 @@ export default function CentralApp() {
               <Users size={20} className="text-blue-500"/> Instâncias (VPS Clientes)
             </h2>
             <button onClick={() => setAddModalOpen(true)} className="bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-lg text-sm font-bold shadow-lg flex items-center gap-2 transition-colors">
-              <Plus size={16} /> <span className="hidden sm:inline">Nova Conexão VPS</span>
+              <Plus size={16} /> <span className="hidden sm:inline">Novo Cliente</span>
             </button>
           </div>
 
@@ -232,7 +239,7 @@ export default function CentralApp() {
               <div className="col-span-full text-center py-20 bg-[#111827] rounded-3xl border border-gray-800">
                 <Globe size={48} className="mx-auto text-gray-700 mb-4" />
                 <p className="text-gray-400 font-bold text-lg">Nenhum painel de cliente conectado.</p>
-                <p className="text-sm text-gray-600 mt-2">Clique em "Nova Conexão VPS" para adicionar o link do sistema de um cliente.</p>
+                <p className="text-sm text-gray-600 mt-2">Clique em "Novo Cliente" para adicionar o link do sistema de um cliente.</p>
               </div>
             )}
             
@@ -263,7 +270,7 @@ export default function CentralApp() {
                 {/* DADOS PUXADOS DA VPS (CONSOLIDADO DO CLIENTE) */}
                 <div className="p-5 flex-1 bg-[#0d131f]">
                   {client.error ? (
-                    <div className="text-rose-400 text-xs bg-rose-500/10 p-3 rounded-lg border border-rose-500/20 font-mono">
+                    <div className="text-rose-400 text-xs bg-rose-500/10 p-3 rounded-lg border border-rose-500/20 font-mono break-words">
                       <strong>Falha de Conexão:</strong> {client.error}
                     </div>
                   ) : client.data ? (
@@ -304,7 +311,7 @@ export default function CentralApp() {
         <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 z-50">
           <div className="bg-[#111827] rounded-3xl p-8 w-full max-w-md border border-gray-700 shadow-2xl">
             <h3 className="text-2xl font-black text-white mb-6 flex items-center gap-3">
-              <Globe className="text-blue-500"/> Conectar Nova VPS
+              <Globe className="text-blue-500"/> Conectar Novo Cliente
             </h3>
             
             <form onSubmit={(e) => {
