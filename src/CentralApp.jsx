@@ -3,7 +3,8 @@ import {
   Server, Globe, RefreshCw, Users, KanbanSquare, 
   DollarSign, TrendingUp, Plus, X, ExternalLink, 
   CheckCircle2, XCircle, ShieldCheck, Activity,
-  Trash2, LogOut, CalendarDays, ArrowRight, FileText
+  Trash2, LogOut, CalendarDays, ArrowRight, FileText,
+  BarChart3 // Novo ícone importado
 } from 'lucide-react';
 
 // --- HOOK DE PERSISTÊNCIA NA VPS (Com fallback local) ---
@@ -67,7 +68,10 @@ const mockClientData = {
   reports: [
     { id: 1, date: '2026-04-10', leads: 120, cost: '4.50', contracts: 8, custom: [] },
     { id: 2, date: '2026-03-10', leads: 95, cost: '5.20', contracts: 5, custom: [] }
-  ]
+  ],
+  config: { // Mock da config para simular o Looker URL
+    lookerStudioUrl: 'https://lookerstudio.google.com/reporting/10b2cbf5-4b1f-4f87-a96a-855d8067c523/page/4E6KF'
+  }
 };
 
 // --- COMPONENTES DE UI ---
@@ -92,15 +96,25 @@ export default function CentralApp() {
   const [addModalOpen, setAddModalOpen] = useState(false);
   const [activeClientId, setActiveClientId] = useState(null);
 
+  // NOVO ESTADO: Controle da aba ativa no modal do cliente
+  const [activeClientTab, setActiveClientTab] = useState('geral'); // 'geral' ou 'looker'
+
   const showToast = (msg) => setToast(msg);
 
   const activeClient = clients.find(c => c.id === activeClientId);
+
+  // Formata a URL do Looker Studio para Embed automaticamente
+  const getEmbedUrl = (url) => {
+    if(!url) return '';
+    if(url.includes('/embed/')) return url;
+    return url.replace('/u/0/reporting/', '/embed/reporting/').replace('/reporting/', '/embed/reporting/');
+  };
 
   // --- LÓGICA DE SINCRONIZAÇÃO (HTTP REQUEST PARA AS VPS) ---
   const syncClient = async (client) => {
     setSyncingId(client.id);
     try {
-      let kanbanData, financesData, reportsData;
+      let kanbanData, financesData, reportsData, configData;
 
       if (client.url.includes('demo') || client.url.includes('localhost')) {
         await new Promise(r => setTimeout(r, 1000));
@@ -108,6 +122,7 @@ export default function CentralApp() {
            kanbanData = mockClientData.kanban;
            financesData = mockClientData.finances;
            reportsData = mockClientData.reports;
+           configData = mockClientData.config; // Simula a config
         } else {
           throw new Error("Credenciais recusadas pelo cliente.");
         }
@@ -130,24 +145,28 @@ export default function CentralApp() {
         const isValid = usersArray.find(u => u.login === client.login && u.pass === client.pass && ['gestor', 'administrador'].includes(u.role));
         if (!isValid) throw new Error("Acesso Negado: Senha incorreta ou permissão insuficiente.");
 
-        const [resK, resF, resR] = await Promise.all([
+        // Adicionada a busca pela configuração do cliente
+        const [resK, resF, resR, resC] = await Promise.all([
           fetch(`${urlBase}/api/data/kanban`),
           fetch(`${urlBase}/api/data/finances`),
-          fetch(`${urlBase}/api/data/reports`)
+          fetch(`${urlBase}/api/data/reports`),
+          fetch(`${urlBase}/api/data/config`) // Busca as configurações (onde está o link do Looker)
         ]);
 
         const jsonK = await resK.json();
         const jsonF = await resF.json();
         const jsonR = await resR.json();
+        const jsonC = await resC.json();
 
         kanbanData = jsonK?.data || (Array.isArray(jsonK) ? jsonK : []);
         financesData = jsonF?.data || (Array.isArray(jsonF) ? jsonF : []);
         reportsData = jsonR?.data || (Array.isArray(jsonR) ? jsonR : []);
+        configData = jsonC?.data || {}; // Pega a config real do cliente
       }
 
       setClients(prev => prev.map(c => c.id === client.id ? {
         ...c, status: 'online', lastSync: new Date().toISOString(), error: null,
-        data: { kanban: kanbanData, finances: financesData, reports: reportsData }
+        data: { kanban: kanbanData, finances: financesData, reports: reportsData, config: configData }
       } : c));
 
       showToast(`Sincronizado: ${client.name}`);
@@ -243,7 +262,6 @@ export default function CentralApp() {
             <button type="submit" className="w-full bg-gradient-to-r from-blue-600 to-cyan-600 text-white p-4 rounded-xl font-bold text-lg shadow-lg hover:shadow-cyan-500/25 transition-all mt-2">Acessar Central</button>
           </form>
           <div className="text-center text-xs text-gray-600 mt-6 flex flex-col gap-1">
-            <p>Super Admin: <span className="text-gray-400">Super / 9328</span></p>
             <p>Admin: <span className="text-gray-400">master / master123</span></p>
             <p>Social Media: <span className="text-gray-400">social / social123</span></p>
           </div>
@@ -334,7 +352,7 @@ export default function CentralApp() {
             )}
             
             {clients.map(client => (
-              <div key={client.id} onClick={() => setActiveClientId(client.id)} className="bg-[#111827] rounded-2xl border border-gray-800 overflow-hidden flex flex-col relative group hover:border-gray-600 hover:shadow-[0_0_20px_rgba(59,130,246,0.1)] transition-all cursor-pointer">
+              <div key={client.id} onClick={() => { setActiveClientId(client.id); setActiveClientTab('geral'); }} className="bg-[#111827] rounded-2xl border border-gray-800 overflow-hidden flex flex-col relative group hover:border-gray-600 hover:shadow-[0_0_20px_rgba(59,130,246,0.1)] transition-all cursor-pointer">
                 <div className="p-5 border-b border-gray-800 flex justify-between items-start">
                   <div>
                     <div className="flex items-center gap-3 mb-1">
@@ -415,82 +433,114 @@ export default function CentralApp() {
                   {activeClient.url} <ExternalLink size={12}/>
                 </a>
               </div>
-              <button onClick={() => setActiveClientId(null)} className="p-2 bg-gray-800 hover:bg-gray-700 text-gray-400 rounded-xl transition-colors"><X size={20}/></button>
+              <div className="flex gap-4">
+                 {isMaster && activeClient.data?.config?.lookerStudioUrl && (
+                  <div className="flex bg-gray-800/50 p-1 rounded-xl">
+                    <button onClick={() => setActiveClientTab('geral')} className={`px-4 py-2 rounded-lg text-sm font-bold transition-all ${activeClientTab === 'geral' ? 'bg-blue-600 text-white shadow-sm' : 'text-gray-400 hover:text-white'}`}>Visão Geral</button>
+                    <button onClick={() => setActiveClientTab('looker')} className={`px-4 py-2 rounded-lg text-sm font-bold transition-all flex items-center gap-2 ${activeClientTab === 'looker' ? 'bg-blue-600 text-white shadow-sm' : 'text-gray-400 hover:text-white'}`}>
+                      <BarChart3 size={16}/> Looker Studio
+                    </button>
+                  </div>
+                )}
+                <button onClick={() => setActiveClientId(null)} className="p-2 bg-gray-800 hover:bg-gray-700 text-gray-400 rounded-xl transition-colors h-fit"><X size={20}/></button>
+              </div>
             </div>
 
             <div className="p-6 overflow-y-auto space-y-8 flex-1 custom-scrollbar">
               
-              {/* SESSÃO: SOCIAL MEDIA (Posts Aprovados para Agendar) */}
-              <section>
-                <div className="flex items-center gap-2 border-b border-gray-800 pb-3 mb-4">
-                  <CalendarDays className="text-amber-400"/>
-                  <h3 className="text-lg font-black text-white uppercase tracking-widest">Ações: Posts Aprovados (Aguardando Agendamento)</h3>
-                </div>
-                
-                {(!activeClient.data?.kanban || activeClient.data.kanban.filter(k => k.col === 'Aprovados').length === 0) ? (
-                  <div className="text-center py-10 bg-[#0d131f] rounded-2xl border border-gray-800 text-gray-500 font-bold">
-                    Nenhum post aguardando agendamento na coluna "Aprovados".
-                  </div>
-                ) : (
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    {activeClient.data.kanban.filter(k => k.col === 'Aprovados').map(card => {
-                      let selectedDate = ''; 
-                      return (
-                        <div key={card.id} className="bg-[#1F2937] p-5 rounded-2xl border border-gray-700 flex flex-col justify-between shadow-lg">
-                          <div className="mb-4">
-                            <h4 className="font-bold text-lg text-white leading-tight mb-2">{card.title}</h4>
-                            <p className="text-sm text-gray-400 line-clamp-2">{card.desc || card.caption || 'Sem descrição.'}</p>
-                          </div>
-                          <div className="bg-[#111827] p-3 rounded-xl border border-gray-800">
-                            <label className="text-[10px] text-gray-500 font-bold uppercase tracking-widest block mb-2">Definir Data de Postagem</label>
-                            <div className="flex gap-2">
-                              <input type="date" onChange={e => selectedDate = e.target.value} className="flex-1 bg-[#1F2937] border border-gray-700 text-white rounded-lg p-2 text-sm outline-none focus:border-blue-500" />
-                              <button onClick={() => schedulePost(activeClient, card.id, selectedDate)} className="bg-blue-600 hover:bg-blue-500 text-white font-bold px-4 py-2 rounded-lg text-sm transition-colors shadow-lg">
-                                Programar
-                              </button>
-                            </div>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </section>
-
-              {/* SESSÃO: MASTER (Tráfego e Relatórios) */}
-              {isMaster && (
-                <section>
-                  <div className="flex items-center gap-2 border-b border-gray-800 pb-3 mb-4 mt-8">
-                    <TrendingUp className="text-cyan-400"/>
-                    <h3 className="text-lg font-black text-white uppercase tracking-widest">Inteligência: Últimos Relatórios de Tráfego</h3>
-                  </div>
-
-                  {(!activeClient.data?.reports || activeClient.data.reports.length === 0) ? (
-                    <div className="text-center py-10 bg-[#0d131f] rounded-2xl border border-gray-800 text-gray-500 font-bold">
-                      Nenhum relatório cadastrado para este cliente.
+              {/* ABA: VISÃO GERAL (Social Media e Resumo Financeiro) */}
+              {activeClientTab === 'geral' && (
+                <>
+                  {/* SESSÃO: SOCIAL MEDIA (Posts Aprovados para Agendar) */}
+                  <section>
+                    <div className="flex items-center gap-2 border-b border-gray-800 pb-3 mb-4">
+                      <CalendarDays className="text-amber-400"/>
+                      <h3 className="text-lg font-black text-white uppercase tracking-widest">Ações: Posts Aprovados (Aguardando Agendamento)</h3>
                     </div>
-                  ) : (
-                    <div className="space-y-4">
-                      {activeClient.data.reports.slice(0, 3).map(rep => (
-                        <div key={rep.id} className="bg-[#1F2937] p-5 rounded-2xl border border-gray-700 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-                          <div>
-                            <p className="text-[10px] text-gray-500 font-bold uppercase tracking-widest mb-1">Referência: {new Date(rep.date).toLocaleDateString('pt-BR')}</p>
-                            <div className="flex gap-6 mt-2">
-                              <div><span className="text-xs text-gray-400 block">Leads</span><span className="font-black text-cyan-400 text-lg">{rep.leads}</span></div>
-                              <div><span className="text-xs text-gray-400 block">Custo/Lead</span><span className="font-black text-white text-lg">R$ {rep.cost}</span></div>
-                              <div><span className="text-xs text-gray-400 block">Contratos</span><span className="font-black text-emerald-400 text-lg">{rep.contracts}</span></div>
+                    
+                    {(!activeClient.data?.kanban || activeClient.data.kanban.filter(k => k.col === 'Aprovados').length === 0) ? (
+                      <div className="text-center py-10 bg-[#0d131f] rounded-2xl border border-gray-800 text-gray-500 font-bold">
+                        Nenhum post aguardando agendamento na coluna "Aprovados".
+                      </div>
+                    ) : (
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        {activeClient.data.kanban.filter(k => k.col === 'Aprovados').map(card => {
+                          let selectedDate = ''; 
+                          return (
+                            <div key={card.id} className="bg-[#1F2937] p-5 rounded-2xl border border-gray-700 flex flex-col justify-between shadow-lg">
+                              <div className="mb-4">
+                                <h4 className="font-bold text-lg text-white leading-tight mb-2">{card.title}</h4>
+                                <p className="text-sm text-gray-400 line-clamp-2">{card.desc || card.caption || 'Sem descrição.'}</p>
+                              </div>
+                              <div className="bg-[#111827] p-3 rounded-xl border border-gray-800">
+                                <label className="text-[10px] text-gray-500 font-bold uppercase tracking-widest block mb-2">Definir Data de Postagem</label>
+                                <div className="flex gap-2">
+                                  <input type="date" onChange={e => selectedDate = e.target.value} className="flex-1 bg-[#1F2937] border border-gray-700 text-white rounded-lg p-2 text-sm outline-none focus:border-blue-500" />
+                                  <button onClick={() => schedulePost(activeClient, card.id, selectedDate)} className="bg-blue-600 hover:bg-blue-500 text-white font-bold px-4 py-2 rounded-lg text-sm transition-colors shadow-lg">
+                                    Programar
+                                  </button>
+                                </div>
+                              </div>
                             </div>
-                          </div>
-                          {rep.attachment && (
-                            <a href={rep.attachment} target="_blank" rel="noreferrer" className="flex items-center gap-2 bg-gray-800 hover:bg-gray-700 border border-gray-600 px-4 py-2 rounded-xl text-white text-sm font-bold transition-colors">
-                              <FileText size={16}/> Ver PDF Completo
-                            </a>
-                          )}
+                          );
+                        })}
+                      </div>
+                    )}
+                  </section>
+
+                  {/* SESSÃO: MASTER (Tráfego e Relatórios) */}
+                  {isMaster && (
+                    <section>
+                      <div className="flex items-center gap-2 border-b border-gray-800 pb-3 mb-4 mt-8">
+                        <TrendingUp className="text-cyan-400"/>
+                        <h3 className="text-lg font-black text-white uppercase tracking-widest">Inteligência: Últimos Relatórios de Tráfego</h3>
+                      </div>
+
+                      {(!activeClient.data?.reports || activeClient.data.reports.length === 0) ? (
+                        <div className="text-center py-10 bg-[#0d131f] rounded-2xl border border-gray-800 text-gray-500 font-bold">
+                          Nenhum relatório cadastrado para este cliente.
                         </div>
-                      ))}
-                    </div>
+                      ) : (
+                        <div className="space-y-4">
+                          {activeClient.data.reports.slice(0, 3).map(rep => (
+                            <div key={rep.id} className="bg-[#1F2937] p-5 rounded-2xl border border-gray-700 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+                              <div>
+                                <p className="text-[10px] text-gray-500 font-bold uppercase tracking-widest mb-1">Referência: {new Date(rep.date).toLocaleDateString('pt-BR')}</p>
+                                <div className="flex gap-6 mt-2">
+                                  <div><span className="text-xs text-gray-400 block">Leads</span><span className="font-black text-cyan-400 text-lg">{rep.leads}</span></div>
+                                  <div><span className="text-xs text-gray-400 block">Custo/Lead</span><span className="font-black text-white text-lg">R$ {rep.cost}</span></div>
+                                  <div><span className="text-xs text-gray-400 block">Contratos</span><span className="font-black text-emerald-400 text-lg">{rep.contracts}</span></div>
+                                </div>
+                              </div>
+                              {rep.attachment && (
+                                <a href={rep.attachment} target="_blank" rel="noreferrer" className="flex items-center gap-2 bg-gray-800 hover:bg-gray-700 border border-gray-600 px-4 py-2 rounded-xl text-white text-sm font-bold transition-colors">
+                                  <FileText size={16}/> Ver PDF Completo
+                                </a>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </section>
                   )}
-                </section>
+                </>
+              )}
+
+              {/* ABA: LOOKER STUDIO */}
+              {activeClientTab === 'looker' && isMaster && (
+                <div className="flex flex-col h-full min-h-[600px] bg-white rounded-2xl overflow-hidden relative">
+                   <div className="bg-yellow-50 p-3 text-center text-xs font-bold text-yellow-700 border-b border-yellow-200 flex flex-col md:flex-row justify-center items-center gap-2">
+                    <span className="text-xl">⚠️</span> 
+                    <span>Lembrete: O cliente precisa ativar a incorporação no Looker Studio (Arquivo &gt; Incorporar Relatório).</span>
+                  </div>
+                  <iframe 
+                    src={getEmbedUrl(activeClient.data?.config?.lookerStudioUrl)} 
+                    frameBorder="0" 
+                    style={{ border: 0 }} 
+                    allowFullScreen 
+                    className="w-full h-full flex-1 min-h-[700px]">
+                  </iframe>
+                </div>
               )}
 
             </div>
