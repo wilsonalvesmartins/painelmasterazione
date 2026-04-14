@@ -18,13 +18,18 @@ function usePersistentState(key, initialValue) {
   });
 
   const setValue = (value) => {
-    try {
-      const valueToStore = value instanceof Function ? value(state) : value;
-      setState(valueToStore);
-      localStorage.setItem(key, JSON.stringify(valueToStore));
-    } catch (error) {
-      console.error(error);
-    }
+    // CORREÇÃO: Usar a função de callback do setState garante que pegamos sempre a memória mais recente, 
+    // evitando conflitos quando o "Adicionar" e o "Sincronizar" correm no mesmo milissegundo.
+    setState((prevState) => {
+      try {
+        const valueToStore = value instanceof Function ? value(prevState) : value;
+        localStorage.setItem(key, JSON.stringify(valueToStore));
+        return valueToStore;
+      } catch (error) {
+        console.error(error);
+        return prevState;
+      }
+    });
   };
 
   return [state, setValue];
@@ -334,9 +339,13 @@ export default function CentralApp() {
                 status: 'pending',
                 data: null
               };
-              setClients([...clients, newClient]);
+              
+              // Adiciona o cliente ao estado
+              setClients(prevClients => [...prevClients, newClient]);
               setAddModalOpen(false);
-              syncClient(newClient); // Tenta sincronizar na hora
+              
+              // Tenta sincronizar logo a seguir
+              syncClient(newClient);
             }} className="space-y-4">
               
               <div>
