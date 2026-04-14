@@ -1,0 +1,8 @@
+version: '3.8'
+services:
+  azione-master:
+    build: .
+    container_name: azione-master-app
+    restart: unless-stopped
+    ports:
+      - "4000:4000" # Expondo na porta 4000
