@@ -14,5 +14,8 @@ RUN npm install --production
 COPY server.js ./
 COPY --from=build /app/dist ./dist
 
+# Criar a diretoria de dados para o SQLite não falhar
+RUN mkdir -p /app/data
+
 EXPOSE 4000
 CMD ["npm", "start"]
