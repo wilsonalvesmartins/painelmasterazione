@@ -122,7 +122,9 @@ export default function CentralApp() {
   const [addModalOpen, setAddModalOpen] = useState(false);
   const [activeClientId, setActiveClientId] = useState(null);
   const [activeClientTab, setActiveClientTab] = useState('geral'); // geral | kanban | looker | financeiro
+  
   const [editingFin, setEditingFin] = useState(null);
+  const [editingCard, setEditingCard] = useState(null); // NOVO ESTADO: Card em edição
 
   const showToast = (msg) => setToast(msg);
   
@@ -251,6 +253,18 @@ export default function CentralApp() {
     else fins = fins.map(f => f.id === editingFin.id ? editingFin : f);
     saveClientData(client, 'finances', fins);
     setEditingFin(null);
+  };
+
+  // --- LÓGICA DE SALVAR CARD DO KANBAN ---
+  const handleSaveCard = (client) => {
+    let kanbanArray = safeArray(client.data?.kanban);
+    if (editingCard.id === 'new') {
+      kanbanArray = [...kanbanArray, { ...editingCard, id: Date.now().toString() }];
+    } else {
+      kanbanArray = kanbanArray.map(c => c.id === editingCard.id ? editingCard : c);
+    }
+    saveClientData(client, 'kanban', kanbanArray);
+    setEditingCard(null);
   };
 
   // --- LÓGICA DO DRAG & DROP DO KANBAN ---
@@ -523,7 +537,7 @@ export default function CentralApp() {
               <div className="flex flex-wrap gap-2">
                 <button onClick={() => setActiveClientTab('geral')} className={`px-4 py-2 rounded-lg text-sm font-bold transition-all ${activeClientTab === 'geral' ? 'text-white' : 'bg-[#1F2937] text-gray-400 hover:bg-gray-700'}`} style={activeClientTab === 'geral' ? primaryBg : {}}>Mídias e Relatórios</button>
                 
-                {/* NOVO BOTÃO: ESTEIRA KANBAN (Acesso Liberado a Todos) */}
+                {/* BOTÃO: ESTEIRA KANBAN */}
                 <button onClick={() => setActiveClientTab('kanban')} className={`px-4 py-2 rounded-lg text-sm font-bold transition-all flex items-center gap-2 ${activeClientTab === 'kanban' ? 'text-white' : 'bg-[#1F2937] text-gray-400 hover:bg-gray-700'}`} style={activeClientTab === 'kanban' ? primaryBg : {}}>
                   <KanbanSquare size={16}/> Esteira Kanban
                 </button>
@@ -613,9 +627,15 @@ export default function CentralApp() {
                 </>
               )}
 
-              {/* NOVA ABA: ESTEIRA KANBAN MIRROR */}
+              {/* ABA: ESTEIRA KANBAN MIRROR (COM EDIÇÃO DE CARDS) */}
               {activeClientTab === 'kanban' && (
                 <div className="h-[65vh] flex flex-col">
+                  <div className="flex justify-between items-center mb-4 border-b border-gray-800 pb-3">
+                     <h3 className="text-lg font-black text-white uppercase tracking-widest flex items-center gap-2"><KanbanSquare className="text-blue-400"/> Gestão de Cards</h3>
+                     <button onClick={() => setEditingCard({ id: 'new', title: 'Novo Card', desc: '', link: '', col: 'Ideias', date: '', isCarousel: false, carousel: [], caption: '', comments: [] })} className="text-white text-xs font-bold px-4 py-2 rounded-lg flex items-center gap-2 transition-transform hover:scale-105" style={primaryBg}>
+                        <Plus size={14}/> Novo Card
+                     </button>
+                  </div>
                   <div className="flex gap-4 overflow-x-auto pb-4 flex-1 items-start snap-x custom-scrollbar">
                     {kanbanColumns.map(col => (
                       <div key={col} 
@@ -633,7 +653,8 @@ export default function CentralApp() {
                             <div key={card.id} 
                                  draggable 
                                  onDragStart={(e) => onDragStart(e, card.id)} 
-                                 className="bg-[#111827] p-4 rounded-xl border border-gray-700 cursor-grab active:cursor-grabbing hover:border-blue-500 transition-colors shadow-md">
+                                 onClick={() => setEditingCard(card)}
+                                 className="bg-[#111827] p-4 rounded-xl border border-gray-700 cursor-pointer hover:border-blue-500 transition-colors shadow-md">
                               <h4 className="font-bold text-white text-sm mb-2">{card.title}</h4>
                               <p className="text-xs text-gray-400 line-clamp-2 mb-3">{card.desc || card.caption || 'Sem descrição/legenda.'}</p>
                               <div className="flex items-center justify-between mt-2 pt-2 border-t border-gray-800">
@@ -786,6 +807,75 @@ export default function CentralApp() {
                  </div>
               </div>
             )}
+
+            {/* OVERLAY PARA EDIÇÃO DE CARD KANBAN */}
+            {editingCard && (
+              <div className="absolute inset-0 bg-[#0d131f]/95 backdrop-blur-md z-20 flex items-center justify-center p-4 md:p-6">
+                 <div className="bg-[#111827] rounded-3xl p-6 md:p-8 w-full max-w-4xl border border-gray-700 shadow-2xl flex flex-col max-h-full">
+                    <h3 className="text-xl font-black text-white mb-4 border-b border-gray-800 pb-3 flex justify-between items-center flex-shrink-0">
+                      Detalhes do Card <button onClick={()=>setEditingCard(null)} className="text-gray-500 hover:text-white"><X size={20}/></button>
+                    </h3>
+                    
+                    <div className="overflow-y-auto flex-1 custom-scrollbar space-y-5 pr-2">
+                      <div>
+                        <label className="text-[10px] font-bold text-gray-400 uppercase mb-1 block">Título do Card</label>
+                        <input value={editingCard.title} onChange={e => setEditingCard({...editingCard, title: e.target.value})} className="w-full p-3 bg-[#1F2937] border border-gray-700 rounded-xl outline-none text-white text-sm font-bold focus:border-blue-500 transition-colors" />
+                      </div>
+                      
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div>
+                          <label className="text-[10px] font-bold text-gray-400 uppercase mb-1 block">Data Programada</label>
+                          <input type="date" value={editingCard.date || ''} onChange={e => setEditingCard({...editingCard, date: e.target.value})} className="w-full p-3 bg-[#1F2937] border border-gray-700 rounded-xl outline-none text-white text-sm focus:border-blue-500 transition-colors" />
+                        </div>
+                        <div>
+                          <label className="text-[10px] font-bold text-gray-400 uppercase mb-1 block">Status (Coluna)</label>
+                          <select value={editingCard.col} onChange={e => setEditingCard({...editingCard, col: e.target.value})} className="w-full p-3 bg-[#1F2937] border border-gray-700 rounded-xl outline-none text-white text-sm font-bold focus:border-blue-500 transition-colors">
+                            {kanbanColumns.map(c => <option key={c} value={c}>{c}</option>)}
+                          </select>
+                        </div>
+                      </div>
+                      
+                      <div>
+                        <label className="text-[10px] font-bold text-gray-400 uppercase mb-1 block">Descrição / Roteiro</label>
+                        <textarea rows={3} value={editingCard.desc || ''} onChange={e => setEditingCard({...editingCard, desc: e.target.value})} className="w-full p-3 bg-[#1F2937] border border-gray-700 rounded-xl outline-none text-white text-sm resize-none focus:border-blue-500 transition-colors" placeholder="Detalhes do conteúdo..." />
+                      </div>
+                      
+                      <div className="bg-[#1F2937] border border-gray-700 p-4 rounded-xl">
+                        <div className="flex items-center justify-between mb-3">
+                          <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest block">Link da Mídia (Drive)</label>
+                          <label className="flex items-center gap-2 text-xs font-bold text-gray-300 cursor-pointer">
+                            <input type="checkbox" checked={editingCard.isCarousel || false} onChange={e => setEditingCard({...editingCard, isCarousel: e.target.checked})} className="accent-blue-600" />
+                            Modo Carrossel
+                          </label>
+                        </div>
+                        {!editingCard.isCarousel ? (
+                          <input value={editingCard.link || ''} placeholder="Cole o link do Google Drive" onChange={e => setEditingCard({...editingCard, link: e.target.value})} className="w-full p-3 bg-[#111827] border border-gray-800 rounded-xl outline-none text-white text-sm focus:border-blue-500 transition-colors" />
+                        ) : (
+                          <div className="space-y-2">
+                            {(editingCard.carousel || []).map((link, i) => (
+                              <input key={i} value={link} placeholder={`Link ${i+1}`} onChange={e => {
+                                const newC = [...(editingCard.carousel || [])]; newC[i] = e.target.value; setEditingCard({...editingCard, carousel: newC});
+                              }} className="w-full p-3 bg-[#111827] border border-gray-800 rounded-xl outline-none text-white text-sm focus:border-blue-500 transition-colors" />
+                            ))}
+                            <button onClick={() => setEditingCard({...editingCard, carousel: [...(editingCard.carousel || []), '']})} className="text-xs font-bold text-blue-400 flex items-center gap-1 w-full justify-center p-2 hover:bg-blue-500/10 rounded-lg transition-colors"><Plus size={14}/> Adicionar Slide</button>
+                          </div>
+                        )}
+                      </div>
+                      
+                      <div>
+                        <label className="text-[10px] font-bold text-gray-400 uppercase mb-1 block">Legenda (Copy)</label>
+                        <textarea rows={4} value={editingCard.caption || ''} onChange={e => setEditingCard({...editingCard, caption: e.target.value})} className="w-full p-3 bg-[#1F2937] border border-gray-700 rounded-xl outline-none text-white text-sm resize-none focus:border-blue-500 transition-colors" placeholder="Escreva a legenda..." />
+                      </div>
+                    </div>
+                    
+                    <div className="pt-4 mt-4 border-t border-gray-800 flex gap-3 flex-shrink-0">
+                      <button onClick={()=>setEditingCard(null)} className="flex-1 p-3 rounded-xl font-bold bg-gray-800 text-gray-400 hover:text-white transition-colors">Cancelar</button>
+                      <button onClick={()=>handleSaveCard(activeClient)} className="flex-1 p-3 rounded-xl font-bold text-white shadow-lg transition-transform hover:scale-[1.02]" style={primaryBg}>Salvar Alterações</button>
+                    </div>
+                 </div>
+              </div>
+            )}
+
           </div>
         </div>
       )}
