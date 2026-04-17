@@ -329,23 +329,38 @@ export default function CentralApp() {
     return (
       <div className="min-h-screen flex items-center justify-center p-4 font-sans text-gray-200" style={{ backgroundColor: safeConfig.bgColor }}>
         <div className="p-10 rounded-3xl shadow-2xl border border-gray-800 w-full max-w-md relative overflow-hidden" style={{ backgroundColor: safeConfig.cardBgColor }}>
-          <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-blue-600 to-cyan-400"></div>
+          <div className="absolute top-0 left-0 w-full h-1" style={gradientStyle}></div>
           <div className="flex justify-center mb-6">
-            <div className="w-16 h-16 bg-blue-600/20 rounded-2xl flex items-center justify-center border border-blue-500/30">
-              <Server className="text-blue-400" size={32} />
-            </div>
+            {safeConfig.logo ? (
+              <img src={safeConfig.logo} alt="Logo" className="h-16 object-contain" />
+            ) : (
+              <div className="w-16 h-16 bg-blue-600/20 rounded-2xl flex items-center justify-center border border-blue-500/30">
+                <Server className="text-blue-400" size={32} />
+              </div>
+            )}
           </div>
-          <h1 className="text-3xl font-black text-white text-center mb-2">Painel Master</h1>
-          <p className="text-center text-gray-500 mb-8 text-sm">Azione Marketing - Central de Operações</p>
+          <h1 className="text-3xl font-black text-white text-center mb-2">{safeConfig.companyName}</h1>
+          <p className="text-center text-gray-500 mb-8 text-sm">Central de Operações da Agência</p>
           
-          <form onSubmit={(e) => { e.preventDefault(); if(e.target.pass.value === 'master2026') setCurrentUser({ role: 'super', name: 'Super Administrador' }); else showToast("Senha de diretoria incorreta!"); }} className="space-y-5">
+          <form onSubmit={(e) => { 
+            e.preventDefault(); 
+            const user = e.target.user.value; const pass = e.target.pass.value;
+            if (user === 'Super' && pass === '9328') setCurrentUser({ role: 'super', name: 'Super Administrador' });
+            else if (user === 'master' && pass === 'master123') setCurrentUser({ role: 'master', name: 'Administrador Master' });
+            else if (user === 'social' && pass === 'social123') setCurrentUser({ role: 'social', name: 'Social Media' });
+            else showToast("Credenciais incorretas!"); 
+          }} className="space-y-4">
             <div>
-              <label className="text-xs font-bold text-gray-500 uppercase tracking-widest block mb-2">Chave de Acesso Global</label>
+              <label className="text-xs font-bold text-gray-500 uppercase tracking-widest block mb-2">Usuário Central</label>
+              <input name="user" type="text" placeholder="master ou social" required className="w-full p-4 bg-black/40 border border-gray-700 rounded-xl outline-none focus:border-blue-500 text-white font-mono tracking-widest" />
+            </div>
+            <div>
+              <label className="text-xs font-bold text-gray-500 uppercase tracking-widest block mb-2">Senha Global</label>
               <input name="pass" type="password" placeholder="••••••••" required className="w-full p-4 bg-black/40 border border-gray-700 rounded-xl outline-none focus:border-blue-500 text-white font-mono tracking-widest" />
             </div>
-            <button type="submit" className="w-full bg-gradient-to-r from-blue-600 to-cyan-600 text-white p-4 rounded-xl font-bold text-lg shadow-lg hover:shadow-cyan-500/25 transition-all">Conectar à Central</button>
+            <button type="submit" className="w-full text-white p-4 rounded-xl font-bold text-lg shadow-lg transition-transform hover:scale-[1.02] mt-4" style={gradientStyle}>Acessar Central</button>
           </form>
-          <p className="text-center text-xs text-gray-600 mt-4">Dica para o Canvas: digite <span className="text-gray-400">master2026</span></p>
+          <p className="text-center text-xs text-gray-600 mt-4">Acesso master: <span className="text-gray-400">master</span> / <span className="text-gray-400">master123</span></p>
         </div>
         {toast && <Toast msg={toast} onClose={() => setToast('')} />}
       </div>
@@ -369,13 +384,15 @@ export default function CentralApp() {
     <div className="min-h-screen text-gray-300 font-sans flex flex-col transition-colors duration-500" style={{ backgroundColor: safeConfig.bgColor }}>
       <header className="border-b border-gray-800 p-4 sticky top-0 z-40 transition-colors duration-500" style={{ backgroundColor: safeConfig.cardBgColor }}>
         <div className="max-w-7xl mx-auto flex justify-between items-center">
-          <div className="flex items-center gap-4">
-            <div className="bg-gradient-to-br from-blue-600 to-cyan-500 text-white p-2 rounded-xl">
-              <Globe size={24} />
-            </div>
+          <div className="flex items-center gap-4 cursor-pointer" onClick={() => setMainView('dashboard')}>
+            {safeConfig.logo ? (
+              <img src={safeConfig.logo} alt="Logo" className="h-10 object-contain bg-white/5 p-1 rounded-xl" />
+            ) : (
+              <div className="text-white p-2 rounded-xl" style={gradientStyle}><Globe size={24} /></div>
+            )}
             <div>
-              <h1 className="text-xl font-black text-white leading-none">Azione Master</h1>
-              <span className="text-[10px] uppercase tracking-widest text-cyan-400 font-bold">Central de Controle SaaS</span>
+              <h1 className="text-xl font-black text-white leading-none">{safeConfig.companyName}</h1>
+              <span className="text-[10px] uppercase tracking-widest font-bold" style={{ color: safeConfig.secondaryColor }}>Perfil: {currentUser.name}</span>
             </div>
           </div>
           <div className="flex gap-4">
@@ -763,7 +780,7 @@ export default function CentralApp() {
 
             {/* OVERLAY PARA EDIÇÃO DE FATURA */}
             {editingFin && (
-              <div className="absolute inset-0 bg-[#0d131f]/95 backdrop-blur-md z-10 flex items-center justify-center p-6">
+              <div className="fixed inset-0 bg-black/95 backdrop-blur-md z-[60] flex items-center justify-center p-4 md:p-6">
                  <div className="bg-[#111827] rounded-3xl p-8 w-full max-w-md border border-gray-700 shadow-2xl">
                     <h3 className="text-xl font-black text-white mb-6 border-b border-gray-800 pb-3 flex justify-between items-center">
                       Detalhes da Fatura <button onClick={()=>setEditingFin(null)} className="text-gray-500 hover:text-white"><X size={20}/></button>
@@ -808,7 +825,7 @@ export default function CentralApp() {
 
             {/* OVERLAY PARA EDIÇÃO DE CARD KANBAN */}
             {editingCard && (
-              <div className="absolute inset-0 bg-[#0d131f]/95 backdrop-blur-md z-20 flex items-center justify-center p-4 md:p-6">
+              <div className="fixed inset-0 bg-black/95 backdrop-blur-md z-[60] flex items-center justify-center p-4 md:p-6">
                  <div className="bg-[#111827] rounded-3xl p-6 md:p-8 w-full max-w-4xl border border-gray-700 shadow-2xl flex flex-col max-h-full">
                     <h3 className="text-xl font-black text-white mb-4 border-b border-gray-800 pb-3 flex justify-between items-center flex-shrink-0">
                       Detalhes do Card <button onClick={()=>setEditingCard(null)} className="text-gray-500 hover:text-white"><X size={20}/></button>
@@ -876,6 +893,22 @@ export default function CentralApp() {
                       <div>
                         <label className="text-[10px] font-bold text-gray-400 uppercase mb-1 block">Legenda (Copy)</label>
                         <textarea rows={4} value={editingCard.caption || ''} onChange={e => setEditingCard({...editingCard, caption: e.target.value})} className="w-full p-3 bg-[#1F2937] border border-gray-700 rounded-xl outline-none text-white text-sm resize-none focus:border-blue-500 transition-colors" placeholder="Escreva a legenda..." />
+                        
+                        <div className="bg-gradient-to-r from-blue-900/30 to-cyan-900/30 border border-blue-500/30 p-4 rounded-2xl mt-4">
+                          <p className="text-xs font-black text-blue-400 mb-3 flex items-center gap-1.5 uppercase tracking-wider"><Bot size={16}/> Gerador Automático de Legenda (IA)</p>
+                          <input placeholder="Instruções: Tom descontraído..." value={editingCard.aiPrompt || ''} onChange={e => setEditingCard({...editingCard, aiPrompt: e.target.value})} className="w-full text-sm p-3 border border-gray-700 rounded-xl outline-none mb-3 bg-[#1F2937] text-white focus:border-blue-500" />
+                          <button onClick={async () => {
+                            try {
+                              const prompt = `Título: ${editingCard.title}. Descrição: ${editingCard.desc}. Regras extras: ${editingCard.aiPrompt || ''}`;
+                              const sys = `Você é um copywriter. OBRIGATÓRIO: Retorne APENAS o texto final da legenda com hashtags. PROIBIDO usar introduções. Apenas o texto puro.`;
+                              const txt = await callGeminiWithFallback(prompt, sys, safeConfig.geminiKey);
+                              setEditingCard({...editingCard, caption: txt});
+                              showToast('Legenda gerada!');
+                            } catch (e) { showToast(e.message); }
+                          }} className="w-full bg-blue-600 hover:bg-blue-500 text-white text-sm font-bold py-3 rounded-xl transition-colors shadow-lg">
+                            Criar Legenda Incrível
+                          </button>
+                        </div>
                       </div>
                     </div>
                     
@@ -905,7 +938,7 @@ export default function CentralApp() {
 
       {/* MODAIS (ADICIONAR E EDITAR CLIENTE) */}
       {(addModalOpen || editingClient) && isSuper && (
-        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+        <div className="fixed inset-0 bg-black/95 backdrop-blur-md z-[60] flex items-center justify-center p-4">
           <div className="bg-[#111827] rounded-3xl p-8 w-full max-w-md border border-gray-700 shadow-2xl">
             <h3 className="text-2xl font-black text-white mb-6 flex items-center gap-3">
               <Globe style={{ color: safeConfig.primaryColor }}/> {editingClient ? 'Editar Cliente' : 'Conectar Nova VPS'}
