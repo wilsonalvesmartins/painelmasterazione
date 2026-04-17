@@ -4,35 +4,94 @@ import {
   DollarSign, TrendingUp, Plus, X, ExternalLink, 
   CheckCircle2, XCircle, ShieldCheck, Activity,
   Trash2, LogOut, CalendarDays, ArrowRight, FileText,
-  BarChart3, Settings, CreditCard, Edit3
+  BarChart3, Settings, CreditCard, Edit3, Bot
 } from 'lucide-react';
 
 // --- FUNÇÕES DE SEGURANÇA MÁXIMA PARA EVITAR TELA BRANCA (CRASH) ---
 const safeArray = (arr) => Array.isArray(arr) ? arr : [];
 const safeObject = (obj) => (typeof obj === 'object' && obj !== null && !Array.isArray(obj)) ? obj : {};
 
-// Resolve o bug do JavaScript de voltar 1 dia para trás por causa do fuso horário do Brasil
 const formatSafeDate = (dateStr) => {
   if (!dateStr) return 'S/ Data';
   const safeStr = dateStr.length === 10 ? `${dateStr}T12:00:00` : dateStr;
   return new Date(safeStr).toLocaleDateString('pt-BR');
 };
 
-// --- HOOK DE PERSISTÊNCIA NA VPS (Com fallback local Blindado) ---
+const formatDriveLink = (url) => {
+  if (typeof url !== 'string' || !url) return '';
+  return url.replace(/\/view.*$/, '/preview').replace(/\/edit.*$/, '/preview');
+};
+
+// --- MOTOR DA IA DO MASTER (COM RETRY E FALLBACK) ---
+const fetchWithRetry = async (url, options, retries = 5) => {
+  const delays = [1000, 2000, 4000, 8000, 16000];
+  for (let i = 0; i < retries; i++) {
+    try {
+      const response = await fetch(url, options);
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error("Erro detalhado da API do Gemini:", errorText);
+        throw new Error(`Erro na API: ${response.status} - ${errorText}`);
+      }
+      return await response.json();
+    } catch (error) {
+      if (i === retries - 1) throw error;
+      await new Promise(res => setTimeout(res, delays[i]));
+    }
+  }
+};
+
+const callGeminiWithFallback = async (userPrompt, systemPrompt, userApiKey) => {
+  if (!userApiKey) throw new Error("Chave da API do Google Gemini não está configurada nas configurações do Master.");
+  const cleanKey = userApiKey.trim();
+  
+  const listUrl = `https://generativelanguage.googleapis.com/v1beta/models?key=${cleanKey}`;
+  let modelName = "";
+
+  try {
+    const listData = await fetchWithRetry(listUrl, { method: 'GET' });
+    const validModels = (listData.models || []).filter(m => 
+      m.supportedGenerationMethods?.includes('generateContent') && m.name.includes('gemini')
+    );
+
+    if (validModels.length === 0) throw new Error("A sua chave é válida, mas sem permissão para usar modelos Gemini.");
+
+    const preferredModel = 
+      validModels.find(m => m.name.includes('1.5-flash')) ||
+      validModels.find(m => m.name.includes('1.5-pro')) ||
+      validModels.find(m => m.name.includes('2.5-flash')) ||
+      validModels.find(m => m.name.includes('1.0-pro') || m.name === 'models/gemini-pro') ||
+      validModels[0];
+
+    modelName = preferredModel.name; 
+  } catch (err) {
+    throw new Error(`Falha ao validar a chave API: ${err.message}`);
+  }
+
+  const url = `https://generativelanguage.googleapis.com/v1beta/${modelName}:generateContent?key=${cleanKey}`;
+  let payload = {};
+  
+  if (modelName === 'models/gemini-pro' || modelName === 'models/gemini-1.0-pro') {
+      payload = { contents: [{ parts: [{ text: `[INSTRUÇÕES DO SISTEMA]:\n${systemPrompt}\n\n[PEDIDO DO USUÁRIO]:\n${userPrompt}` }] }] };
+  } else {
+      payload = { contents: [{ parts: [{ text: userPrompt }] }], systemInstruction: { parts: [{ text: systemPrompt }] } };
+  }
+
+  const data = await fetchWithRetry(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+  return data.candidates?.[0]?.content?.parts?.[0]?.text || "Erro: Resposta vazia da IA.";
+};
+
+// --- HOOK DE PERSISTÊNCIA NA VPS DO MASTER ---
 function usePersistentState(key, initialValue) {
   const [state, setState] = useState(() => {
     try {
       const item = localStorage.getItem(key);
       if (!item || item === 'null' || item === 'undefined') return initialValue;
       const parsed = JSON.parse(item);
-      
       if (Array.isArray(initialValue) && !Array.isArray(parsed)) return initialValue;
       if (typeof initialValue === 'object' && !Array.isArray(initialValue) && (typeof parsed !== 'object' || Array.isArray(parsed) || parsed === null)) return initialValue;
-      
       return parsed;
-    } catch (error) {
-      return initialValue;
-    }
+    } catch (error) { return initialValue; }
   });
 
   useEffect(() => {
@@ -40,17 +99,11 @@ function usePersistentState(key, initialValue) {
       .then(res => { if (!res.ok) throw new Error(); return res.json(); })
       .then(data => {
         if (data && data.data !== undefined && data.data !== null) {
-          const finalData = data.data;
-          
           setState(prev => {
             let newState;
-            if (typeof initialValue === 'object' && !Array.isArray(initialValue)) {
-               newState = { ...initialValue, ...safeObject(prev), ...safeObject(finalData) };
-            } else if (Array.isArray(initialValue)) {
-               newState = safeArray(finalData);
-            } else {
-               newState = finalData;
-            }
+            if (typeof initialValue === 'object' && !Array.isArray(initialValue)) { newState = { ...initialValue, ...safeObject(prev), ...safeObject(data.data) }; } 
+            else if (Array.isArray(initialValue)) { newState = safeArray(data.data); } 
+            else { newState = data.data; }
             localStorage.setItem(key, JSON.stringify(newState));
             return newState;
           });
@@ -64,36 +117,22 @@ function usePersistentState(key, initialValue) {
       try {
         const valueToStore = value instanceof Function ? value(prevState) : value;
         localStorage.setItem(key, JSON.stringify(valueToStore));
-        fetch(`/api/data/${key}`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ data: valueToStore })
-        }).catch(() => {});
+        fetch(`/api/data/${key}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ data: valueToStore }) }).catch(() => {});
         return valueToStore;
-      } catch (error) {
-        return prevState;
-      }
+      } catch (error) { return prevState; }
     });
   };
-
   return [state, setValue];
 }
 
-// --- DADOS MOCK PARA PREVIEW ---
+// --- DADOS MOCK (SIMULAÇÃO) ---
 const mockClientData = {
   kanban: [
-    { id: '1', title: 'Carrossel de Dicas', desc: 'Dicas de marketing...', col: 'Aprovados', date: '' },
-    { id: '2', title: 'Vídeo Institucional', desc: 'Reels para o feed.', col: 'Aprovados', date: '' }
+    { id: '1', title: 'Carrossel de Dicas', desc: 'Dicas de marketing...', col: 'Aprovados', date: '', isCarousel: false, carousel: [], caption: '', comments: [] },
   ],
-  finances: [
-    { id: 1, desc: 'Gestão de Tráfego', due: '2026-05-05', status: 'Pendente', pix: '123456789' }
-  ],
-  reports: [
-    { id: 1, date: '2026-04-10', leads: 120, cost: '4.50', contracts: 8, custom: [] }
-  ],
-  docs: [
-    { id: 1, title: 'Contrato Social', date: '2026-01-10', link: '#' }
-  ],
+  finances: [ { id: 1, desc: 'Gestão de Tráfego', due: '2026-05-05', status: 'Pendente', pix: '123456789' } ],
+  reports: [ { id: 1, date: '2026-04-10', leads: 120, cost: '4.50', contracts: 8, custom: [] } ],
+  docs: [ { id: 1, title: 'Contrato Social', date: '2026-01-10', link: '#' } ],
   config: { lookerStudioUrl: 'https://lookerstudio.google.com/reporting/10b2cbf5-4b1f-4f87-a96a-855d8067c523/page/4E6KF' }
 };
 
@@ -113,29 +152,32 @@ export default function CentralApp() {
   const [currentUser, setCurrentUser] = usePersistentState('azione_master_user', null);
   const [clients, setClients] = usePersistentState('azione_master_clients', []);
   const [masterConfig, setMasterConfig] = usePersistentState('azione_master_config', {
-    companyName: 'Azione Master', logo: '', primaryColor: '#2563EB', secondaryColor: '#0891B2', bgColor: '#0B1120'
+    companyName: 'Azione Master', logo: '', primaryColor: '#2563EB', secondaryColor: '#0891B2', bgColor: '#0B1120', cardBgColor: '#111827', geminiKey: ''
   });
   
-  const [mainView, setMainView] = useState('dashboard'); // dashboard | settings
+  const [mainView, setMainView] = useState('dashboard');
   const [toast, setToast] = useState('');
   const [syncingId, setSyncingId] = useState(null);
-  const [addModalOpen, setAddModalOpen] = useState(false);
-  const [activeClientId, setActiveClientId] = useState(null);
-  const [activeClientTab, setActiveClientTab] = useState('geral'); // geral | kanban | looker | financeiro
   
+  const [addModalOpen, setAddModalOpen] = useState(false);
+  const [editingClient, setEditingClient] = useState(null); // Estado para editar cliente
+  
+  const [activeClientId, setActiveClientId] = useState(null);
+  const [activeClientTab, setActiveClientTab] = useState('geral');
   const [editingFin, setEditingFin] = useState(null);
   const [editingCard, setEditingCard] = useState(null);
 
-  const showToast = (msg) => setToast(msg);
+  const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(''), 4000); };
   
-  // VARIÁVEIS BLINDADAS CONTRA TELA BRANCA
   const safeClients = safeArray(clients);
   const safeConfig = { 
     companyName: masterConfig?.companyName || 'Azione Master', 
     logo: masterConfig?.logo || '', 
     primaryColor: masterConfig?.primaryColor || '#2563EB', 
     secondaryColor: masterConfig?.secondaryColor || '#0891B2',
-    bgColor: masterConfig?.bgColor || '#0B1120'
+    bgColor: masterConfig?.bgColor || '#0B1120',
+    cardBgColor: masterConfig?.cardBgColor || '#111827',
+    geminiKey: masterConfig?.geminiKey || ''
   };
   const activeClient = safeClients.find(c => c.id === activeClientId);
 
@@ -148,7 +190,6 @@ export default function CentralApp() {
     return url.replace('/u/0/reporting/', '/embed/reporting/').replace('/reporting/', '/embed/reporting/');
   };
 
-  // --- LÓGICA DE SINCRONIZAÇÃO DA VPS ---
   const syncClient = async (client) => {
     setSyncingId(client.id);
     try {
@@ -156,12 +197,9 @@ export default function CentralApp() {
 
       if (client.url.includes('demo') || client.url.includes('localhost')) {
         await new Promise(r => setTimeout(r, 1000));
-        if (client.login === 'admin' || client.login === 'gestor') {
-           kanbanData = mockClientData.kanban;
-           financesData = mockClientData.finances;
-           reportsData = mockClientData.reports;
-           docsData = mockClientData.docs;
-           configData = mockClientData.config;
+        if (client.login === 'admin' || client.login === 'master') {
+           kanbanData = mockClientData.kanban; financesData = mockClientData.finances;
+           reportsData = mockClientData.reports; docsData = mockClientData.docs; configData = mockClientData.config;
         } else throw new Error("Credenciais recusadas pelo cliente.");
       } else {
         const urlBase = client.url.replace(/\/$/, '');
@@ -171,30 +209,18 @@ export default function CentralApp() {
         const dataUsers = await resUsers.json();
         let usersArray = dataUsers?.data && Array.isArray(dataUsers.data) ? dataUsers.data : (Array.isArray(dataUsers) ? dataUsers : []);
         
-        // CORREÇÃO: Aceitar os novos cargos do painel atualizado (master) e manter o antigo (gestor/administrador)
-        if (usersArray.length === 0) {
-            usersArray = [
-                { login: 'master', pass: 'master123', role: 'master' },
-                { login: 'gestor', pass: 'gestor123', role: 'administrador' }
-            ];
-        }
+        if (usersArray.length === 0) usersArray = [{ login: 'master', pass: 'master123', role: 'master' }, { login: 'gestor', pass: 'gestor123', role: 'administrador' }];
 
-        // CORREÇÃO: Validar contra a role 'master' também
         const isValid = usersArray.find(u => u.login === client.login && u.pass === client.pass && ['master', 'gestor', 'administrador'].includes(u.role));
         if (!isValid) throw new Error("Acesso Negado: Senha incorreta ou permissão insuficiente.");
 
         const [resK, resF, resR, resC, resD] = await Promise.all([
-          fetch(`${urlBase}/api/data/kanban`),
-          fetch(`${urlBase}/api/data/finances`),
-          fetch(`${urlBase}/api/data/reports`),
-          fetch(`${urlBase}/api/data/config`),
-          fetch(`${urlBase}/api/data/docs`)
+          fetch(`${urlBase}/api/data/kanban`), fetch(`${urlBase}/api/data/finances`), fetch(`${urlBase}/api/data/reports`), fetch(`${urlBase}/api/data/config`), fetch(`${urlBase}/api/data/docs`)
         ]);
 
         const jsonK = await resK.json(); const jsonF = await resF.json(); 
         const jsonR = await resR.json(); const jsonC = await resC.json(); const jsonD = await resD.json();
 
-        // Extração de dados blindada
         kanbanData = Array.isArray(jsonK?.data) ? jsonK.data : (Array.isArray(jsonK) ? jsonK : []);
         financesData = Array.isArray(jsonF?.data) ? jsonF.data : (Array.isArray(jsonF) ? jsonF : []);
         reportsData = Array.isArray(jsonR?.data) ? jsonR.data : (Array.isArray(jsonR) ? jsonR : []);
@@ -217,19 +243,9 @@ export default function CentralApp() {
 
   const syncAll = () => safeClients.forEach(c => syncClient(c));
 
-  // --- LÓGICA DE SALVAR DADOS DIRETAMENTE NA VPS DO CLIENTE (Otimista) ---
   const saveClientData = async (client, endpoint, newData) => {
-    // 1. ATUALIZAÇÃO OTIMISTA: Altera na tela imediatamente para não haver delay
-    setClients(prev => safeArray(prev).map(c => c.id === client.id ? { 
-      ...c, data: { ...safeObject(c.data), [endpoint]: newData } 
-    } : c));
-
-    if (client.url.includes('demo') || client.url.includes('localhost')) {
-      showToast("Ação realizada com sucesso! (Modo Demo)");
-      return;
-    }
-    
-    // 2. ATUALIZAÇÃO REAL NA VPS EM BACKGROUND
+    setClients(prev => safeArray(prev).map(c => c.id === client.id ? { ...c, data: { ...safeObject(c.data), [endpoint]: newData } } : c));
+    if (client.url.includes('demo') || client.url.includes('localhost')) return showToast("Ação realizada com sucesso! (Modo Demo)");
     try {
       const urlBase = client.url.replace(/\/$/, '');
       const res = await fetch(`${urlBase}/api/data/${endpoint}`, {
@@ -239,7 +255,7 @@ export default function CentralApp() {
       showToast("Dados salvos no cliente com sucesso!");
     } catch(err) {
       showToast(`Erro de conexão ao salvar: ${err.message}`);
-      syncClient(client); // Se der erro, ressincroniza para reverter a tela otimista
+      syncClient(client); 
     }
   };
 
@@ -263,7 +279,6 @@ export default function CentralApp() {
     setEditingFin(null);
   };
 
-  // --- LÓGICA DE SALVAR CARD DO KANBAN ---
   const handleSaveCard = (client) => {
     let kanbanArray = safeArray(client.data?.kanban);
     if (editingCard.id === 'new') {
@@ -275,59 +290,62 @@ export default function CentralApp() {
     setEditingCard(null);
   };
 
-  // --- LÓGICA DO DRAG & DROP DO KANBAN ---
   const kanbanColumns = ['Ideias', 'Produção', 'Finalizados', 'Aprovados', 'Rejeitados', 'Programados', 'Postados'];
   
   const onDragStart = (e, id) => {
     e.dataTransfer.setData('cardId', id);
+    setTimeout(() => { if(e.target) e.target.style.opacity = '0.5'; }, 0);
   };
-  
+  const onDragEnd = (e) => { if(e.target) e.target.style.opacity = '1'; };
   const onDragOver = (e) => e.preventDefault();
   
-  const onDrop = (e, col, client) => {
+  const onDropKanban = (e, col, client) => {
     e.preventDefault();
     const cardId = e.dataTransfer.getData('cardId');
-    let kanbanArray = safeArray(client.data?.kanban);
-    const updated = kanbanArray.map(c => c.id === cardId ? { ...c, col } : c);
-    saveClientData(client, 'kanban', updated);
+    if (!cardId) return;
+
+    let kanbanArray = [...safeArray(client.data?.kanban)];
+    const draggedIdx = kanbanArray.findIndex(c => c.id === cardId);
+    if (draggedIdx === -1) return;
+
+    const draggedCard = { ...kanbanArray[draggedIdx], col };
+    kanbanArray.splice(draggedIdx, 1);
+
+    const targetCardEl = e.target.closest('.kanban-card');
+    if (targetCardEl) {
+      const targetId = targetCardEl.getAttribute('data-id');
+      const targetIdx = kanbanArray.findIndex(c => c.id === targetId);
+      if (targetIdx !== -1) {
+        const rect = targetCardEl.getBoundingClientRect();
+        const isBottom = (e.clientY - rect.top) > (rect.height / 2);
+        kanbanArray.splice(isBottom ? targetIdx + 1 : targetIdx, 0, draggedCard);
+      } else { kanbanArray.push(draggedCard); }
+    } else { kanbanArray.push(draggedCard); }
+    
+    saveClientData(client, 'kanban', kanbanArray);
   };
 
-  // --- LOGIN ---
   if (!currentUser) {
     return (
       <div className="min-h-screen flex items-center justify-center p-4 font-sans text-gray-200" style={{ backgroundColor: safeConfig.bgColor }}>
-        <div className="bg-[#111827] p-10 rounded-3xl shadow-2xl border border-gray-800 w-full max-w-md relative overflow-hidden">
-          <div className="absolute top-0 left-0 w-full h-1" style={gradientStyle}></div>
+        <div className="p-10 rounded-3xl shadow-2xl border border-gray-800 w-full max-w-md relative overflow-hidden" style={{ backgroundColor: safeConfig.cardBgColor }}>
+          <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-blue-600 to-cyan-400"></div>
           <div className="flex justify-center mb-6">
-            {safeConfig.logo ? (
-              <img src={safeConfig.logo} alt="Logo" className="h-16 object-contain" />
-            ) : (
-              <div className="w-16 h-16 bg-gray-800 rounded-2xl flex items-center justify-center border border-gray-700">
-                <Server className="text-gray-400" size={32} />
-              </div>
-            )}
+            <div className="w-16 h-16 bg-blue-600/20 rounded-2xl flex items-center justify-center border border-blue-500/30">
+              <Server className="text-blue-400" size={32} />
+            </div>
           </div>
-          <h1 className="text-3xl font-black text-white text-center mb-2">{safeConfig.companyName}</h1>
-          <p className="text-center text-gray-500 mb-8 text-sm">Central de Operações da Agência</p>
+          <h1 className="text-3xl font-black text-white text-center mb-2">Painel Master</h1>
+          <p className="text-center text-gray-500 mb-8 text-sm">Azione Marketing - Central de Operações</p>
           
-          <form onSubmit={(e) => { 
-            e.preventDefault(); 
-            const user = e.target.user.value; const pass = e.target.pass.value;
-            if (user === 'Super' && pass === '9328') setCurrentUser({ role: 'super', name: 'Super Administrador' });
-            else if (user === 'master' && pass === 'master123') setCurrentUser({ role: 'master', name: 'Administrador Master' });
-            else if (user === 'social' && pass === 'social123') setCurrentUser({ role: 'social', name: 'Social Media' });
-            else showToast("Credenciais incorretas!"); 
-          }} className="space-y-4">
+          <form onSubmit={(e) => { e.preventDefault(); if(e.target.pass.value === 'master2026') setCurrentUser({ role: 'super', name: 'Super Administrador' }); else showToast("Senha de diretoria incorreta!"); }} className="space-y-5">
             <div>
-              <label className="text-xs font-bold text-gray-500 uppercase tracking-widest block mb-2">Usuário Central</label>
-              <input name="user" type="text" placeholder="master ou social" required className="w-full p-4 bg-[#1F2937] border border-gray-700 rounded-xl outline-none text-white font-mono focus:border-gray-500" />
+              <label className="text-xs font-bold text-gray-500 uppercase tracking-widest block mb-2">Chave de Acesso Global</label>
+              <input name="pass" type="password" placeholder="••••••••" required className="w-full p-4 bg-black/40 border border-gray-700 rounded-xl outline-none focus:border-blue-500 text-white font-mono tracking-widest" />
             </div>
-            <div>
-              <label className="text-xs font-bold text-gray-500 uppercase tracking-widest block mb-2">Senha Global</label>
-              <input name="pass" type="password" placeholder="••••••••" required className="w-full p-4 bg-[#1F2937] border border-gray-700 rounded-xl outline-none text-white font-mono tracking-widest focus:border-gray-500" />
-            </div>
-            <button type="submit" className="w-full text-white p-4 rounded-xl font-bold text-lg shadow-lg transition-transform hover:scale-[1.02] mt-2" style={gradientStyle}>Acessar Central</button>
+            <button type="submit" className="w-full bg-gradient-to-r from-blue-600 to-cyan-600 text-white p-4 rounded-xl font-bold text-lg shadow-lg hover:shadow-cyan-500/25 transition-all">Conectar à Central</button>
           </form>
+          <p className="text-center text-xs text-gray-600 mt-4">Dica para o Canvas: digite <span className="text-gray-400">master2026</span></p>
         </div>
         {toast && <Toast msg={toast} onClose={() => setToast('')} />}
       </div>
@@ -339,43 +357,38 @@ export default function CentralApp() {
   
   let globalPendencies = 0; let globalLeads = 0; let globalAprovados = 0;
   safeClients.forEach(c => {
-    const cFins = safeArray(c.data?.finances);
-    const cReps = safeArray(c.data?.reports);
-    const cKanban = safeArray(c.data?.kanban);
-    
-    if (cFins.length > 0) globalPendencies += cFins.filter(f => f.status !== 'Pago').length;
-    if (cReps.length > 0) globalLeads += Number(cReps[0].leads || 0);
-    if (cKanban.length > 0) globalAprovados += cKanban.filter(k => k.col === 'Aprovados').length;
+    if (c.data?.finances) globalPendencies += c.data.finances.filter(f => f.status !== 'Pago').length;
+    if (c.data?.reports?.length > 0) globalLeads += Number(c.data.reports[0].leads || 0); 
+    if (c.data?.kanban) globalAprovados += c.data.kanban.filter(k => k.col === 'Aprovados' || k.col === 'Programados').length;
   });
 
   const onlineClients = safeClients.filter(c => c.status === 'online').length;
   const totalClients = safeClients.length;
 
   return (
-    <div className="min-h-screen text-gray-300 font-sans flex flex-col relative transition-colors duration-500" style={{ backgroundColor: safeConfig.bgColor }}>
-      <header className="bg-[#111827] border-b border-gray-800 p-4 sticky top-0 z-40">
+    <div className="min-h-screen text-gray-300 font-sans flex flex-col transition-colors duration-500" style={{ backgroundColor: safeConfig.bgColor }}>
+      <header className="border-b border-gray-800 p-4 sticky top-0 z-40 transition-colors duration-500" style={{ backgroundColor: safeConfig.cardBgColor }}>
         <div className="max-w-7xl mx-auto flex justify-between items-center">
-          <div className="flex items-center gap-4 cursor-pointer" onClick={() => setMainView('dashboard')}>
-            {safeConfig.logo ? (
-              <img src={safeConfig.logo} alt="Logo" className="h-10 object-contain bg-white/5 p-1 rounded-xl" />
-            ) : (
-              <div className="text-white p-2 rounded-xl" style={gradientStyle}><Globe size={24} /></div>
-            )}
+          <div className="flex items-center gap-4">
+            <div className="bg-gradient-to-br from-blue-600 to-cyan-500 text-white p-2 rounded-xl">
+              <Globe size={24} />
+            </div>
             <div>
-              <h1 className="text-xl font-black text-white leading-none">{safeConfig.companyName}</h1>
-              <span className="text-[10px] uppercase tracking-widest font-bold" style={{ color: safeConfig.secondaryColor }}>Perfil: {currentUser.name}</span>
+              <h1 className="text-xl font-black text-white leading-none">Azione Master</h1>
+              <span className="text-[10px] uppercase tracking-widest text-cyan-400 font-bold">Central de Controle SaaS</span>
             </div>
           </div>
-          <div className="flex gap-3">
-            <button onClick={syncAll} className="flex items-center gap-2 bg-[#1F2937] hover:bg-[#374151] border border-gray-700 px-4 py-2 rounded-lg text-sm font-bold transition-colors hidden md:flex">
-              <RefreshCw size={16} className={syncingId ? 'animate-spin text-white' : 'text-gray-400'} /> Sincronizar Todos
+          <div className="flex gap-4">
+            <button onClick={syncAll} className="flex items-center gap-2 bg-black/40 hover:bg-black/60 border border-gray-700 px-4 py-2 rounded-lg text-sm font-bold transition-colors">
+              <RefreshCw size={16} className={syncingId ? 'animate-spin text-cyan-400' : 'text-gray-400'} /> 
+              <span className="hidden md:inline">Sincronizar Todos</span>
             </button>
             {isSuper && (
-              <button onClick={() => setMainView(mainView === 'settings' ? 'dashboard' : 'settings')} className={`p-2 rounded-lg transition-colors ${mainView === 'settings' ? 'bg-gray-700 text-white' : 'bg-[#1F2937] hover:bg-[#374151] text-gray-400'}`}>
+              <button onClick={() => setMainView(mainView === 'settings' ? 'dashboard' : 'settings')} className={`p-2 rounded-lg transition-colors ${mainView === 'settings' ? 'bg-cyan-500/20 text-cyan-400' : 'bg-black/40 hover:bg-black/60 text-gray-400'}`}>
                 <Settings size={20} />
               </button>
             )}
-            <button onClick={() => setCurrentUser(null)} className="text-red-400 hover:text-red-300 p-2 bg-[#1F2937] rounded-lg">
+            <button onClick={() => setCurrentUser(null)} className="text-red-400 hover:text-red-300 p-2">
               <LogOut size={20} />
             </button>
           </div>
@@ -384,41 +397,52 @@ export default function CentralApp() {
 
       <main className="flex-1 max-w-7xl mx-auto w-full p-4 md:p-8 space-y-8">
         
-        {/* --- SETTINGS VIEW (SUPER APENAS) --- */}
         {mainView === 'settings' && isSuper ? (
-          <section className="bg-[#111827] border border-gray-800 rounded-3xl p-8 max-w-3xl mx-auto shadow-2xl">
+          <section className="border border-gray-800 rounded-3xl p-8 max-w-3xl mx-auto shadow-2xl transition-colors duration-500" style={{ backgroundColor: safeConfig.cardBgColor }}>
             <h2 className="text-2xl font-black text-white mb-6 border-b border-gray-800 pb-4">Ajustes do Master (White-label)</h2>
             <div className="space-y-6">
               <div>
                 <label className="text-xs font-bold text-gray-500 uppercase tracking-widest block mb-2">Nome da Agência / Central</label>
-                <input value={safeConfig.companyName} onChange={e => setMasterConfig({...safeConfig, companyName: e.target.value})} className="w-full p-3 bg-[#1F2937] border border-gray-700 rounded-xl outline-none text-white focus:border-gray-500" />
+                <input value={safeConfig.companyName} onChange={e => setMasterConfig({...safeConfig, companyName: e.target.value})} className="w-full p-3 bg-black/40 border border-gray-700 rounded-xl outline-none text-white focus:border-cyan-500" />
               </div>
               <div>
                 <label className="text-xs font-bold text-gray-500 uppercase tracking-widest block mb-2">URL da Logo (Fundo Escuro Recomendado)</label>
-                <input value={safeConfig.logo} onChange={e => setMasterConfig({...safeConfig, logo: e.target.value})} className="w-full p-3 bg-[#1F2937] border border-gray-700 rounded-xl outline-none text-white focus:border-gray-500 text-sm font-mono" placeholder="https://..." />
+                <input value={safeConfig.logo} onChange={e => setMasterConfig({...safeConfig, logo: e.target.value})} className="w-full p-3 bg-black/40 border border-gray-700 rounded-xl outline-none text-white focus:border-cyan-500 text-sm font-mono" placeholder="https://..." />
               </div>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                <div className="bg-[#1F2937] border border-gray-700 p-3 rounded-xl flex items-center justify-between">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="bg-black/40 border border-gray-700 p-3 rounded-xl flex items-center justify-between">
                   <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Cor Primária</label>
                   <div className="flex items-center gap-2">
                     <input type="text" value={safeConfig.primaryColor} onChange={e => setMasterConfig({...safeConfig, primaryColor: e.target.value})} className="bg-transparent w-20 outline-none font-mono text-white text-sm" />
                     <div className="w-6 h-6 rounded-md border border-gray-600" style={{backgroundColor: safeConfig.primaryColor}}></div>
                   </div>
                 </div>
-                <div className="bg-[#1F2937] border border-gray-700 p-3 rounded-xl flex items-center justify-between">
+                <div className="bg-black/40 border border-gray-700 p-3 rounded-xl flex items-center justify-between">
                   <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Cor Secundária</label>
                   <div className="flex items-center gap-2">
                     <input type="text" value={safeConfig.secondaryColor} onChange={e => setMasterConfig({...safeConfig, secondaryColor: e.target.value})} className="bg-transparent w-20 outline-none font-mono text-white text-sm" />
                     <div className="w-6 h-6 rounded-md border border-gray-600" style={{backgroundColor: safeConfig.secondaryColor}}></div>
                   </div>
                 </div>
-                <div className="bg-[#1F2937] border border-gray-700 p-3 rounded-xl flex items-center justify-between">
-                  <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Fundo (Bg)</label>
+                <div className="bg-black/40 border border-gray-700 p-3 rounded-xl flex items-center justify-between">
+                  <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Fundo Global (Bg)</label>
                   <div className="flex items-center gap-2">
                     <input type="text" value={safeConfig.bgColor} onChange={e => setMasterConfig({...safeConfig, bgColor: e.target.value})} className="bg-transparent w-20 outline-none font-mono text-white text-sm" />
                     <div className="w-6 h-6 rounded-md border border-gray-600" style={{backgroundColor: safeConfig.bgColor}}></div>
                   </div>
                 </div>
+                <div className="bg-black/40 border border-gray-700 p-3 rounded-xl flex items-center justify-between">
+                  <label className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Fundo dos Cards/Header</label>
+                  <div className="flex items-center gap-2">
+                    <input type="text" value={safeConfig.cardBgColor} onChange={e => setMasterConfig({...safeConfig, cardBgColor: e.target.value})} className="bg-transparent w-20 outline-none font-mono text-white text-sm" />
+                    <div className="w-6 h-6 rounded-md border border-gray-600" style={{backgroundColor: safeConfig.cardBgColor}}></div>
+                  </div>
+                </div>
+              </div>
+              <div>
+                <label className="text-xs font-bold text-gray-500 uppercase tracking-widest block mb-1">Google AI Studio Key (Gemini API para a Esteira)</label>
+                <input type="password" value={safeConfig.geminiKey} onChange={e => setMasterConfig({...safeConfig, geminiKey: e.target.value})} className="w-full p-3 bg-black/40 border border-gray-700 rounded-xl outline-none text-white focus:border-cyan-500 font-mono text-sm" placeholder="AIzaSy..." />
+                <p className="text-[10px] font-bold text-blue-500 mt-1 uppercase tracking-wide">Usada para a IA da Esteira Kanban geradora de textos do Master.</p>
               </div>
               <div className="pt-4 border-t border-gray-800">
                 <button onClick={() => { setMainView('dashboard'); showToast("Cores e Configurações Aplicadas!"); }} className="w-full text-white p-4 rounded-xl font-bold shadow-lg" style={gradientStyle}>Salvar e Voltar ao Dashboard</button>
@@ -426,67 +450,72 @@ export default function CentralApp() {
             </div>
           </section>
         ) : (
-          /* --- DASHBOARD VIEW --- */
           <>
             <section>
               <h2 className="text-lg font-black text-white mb-4 uppercase tracking-widest flex items-center gap-2" style={{ color: safeConfig.secondaryColor }}>
-                <Activity size={20} /> Visão Global da Agência
+                <Activity size={20} className="text-cyan-500"/> Visão Global da Agência
               </h2>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                {isMaster && <StatCard title="Clientes Conectados" value={`${onlineClients}/${totalClients}`} icon={<Server/>} borderColor="border-gray-800" />}
-                {isMaster && <StatCard title="Faturas Pendentes" value={globalPendencies} icon={<DollarSign/>} borderColor={globalPendencies > 0 ? 'border-rose-500/50' : 'border-gray-800'} textColor={globalPendencies > 0 ? 'text-rose-400' : 'text-white'} />}
-                <StatCard title="Aprovados p/ Agendar" value={globalAprovados} icon={<KanbanSquare/>} borderColor="border-gray-800" />
-                {isMaster && <StatCard title="Leads (Últ. Relatório)" value={globalLeads} icon={<TrendingUp/>} borderColor="border-gray-800" />}
+                <StatCard cardBg={safeConfig.cardBgColor} title="Clientes Conectados" value={`${onlineClients} / ${totalClients}`} icon={<Server/>} color="text-emerald-400" bg="bg-emerald-400/10" border="border-emerald-500/20" />
+                <StatCard cardBg={safeConfig.cardBgColor} title="Faturas Pendentes" value={globalPendencies} icon={<DollarSign/>} color="text-rose-400" bg="bg-rose-400/10" border="border-rose-500/20" />
+                <StatCard cardBg={safeConfig.cardBgColor} title="Posts Prontos p/ Agendar" value={globalAprovados} icon={<KanbanSquare/>} color="text-amber-400" bg="bg-amber-400/10" border="border-amber-500/20" />
+                <StatCard cardBg={safeConfig.cardBgColor} title="Leads Gerados (Últ. Relatório)" value={globalLeads} icon={<TrendingUp/>} color="text-blue-400" bg="bg-blue-400/10" border="border-blue-500/20" />
               </div>
             </section>
 
             <section>
               <div className="flex justify-between items-end mb-4">
                 <h2 className="text-lg font-black text-white uppercase tracking-widest flex items-center gap-2" style={{ color: safeConfig.primaryColor }}>
-                  <Users size={20} /> Instâncias (VPS Clientes)
+                  <Users size={20} className="text-blue-500"/> Instâncias (VPS Clientes)
                 </h2>
                 {isSuper && (
-                  <button onClick={() => setAddModalOpen(true)} className="text-white px-4 py-2 rounded-lg text-sm font-bold shadow-lg flex items-center gap-2 transition-transform hover:scale-105" style={primaryBg}>
-                    <Plus size={16} /> <span className="hidden sm:inline">Novo Cliente</span>
+                  <button onClick={() => setAddModalOpen(true)} className="bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-lg text-sm font-bold shadow-lg flex items-center gap-2 transition-colors">
+                    <Plus size={16} /> Nova Conexão VPS
                   </button>
                 )}
               </div>
 
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                {safeClients.length === 0 && (
-                  <div className="col-span-full text-center py-20 bg-[#111827] rounded-3xl border border-gray-800">
+                {clients.length === 0 && (
+                  <div className="col-span-full text-center py-20 rounded-3xl border border-gray-800" style={{ backgroundColor: safeConfig.cardBgColor }}>
                     <Globe size={48} className="mx-auto text-gray-700 mb-4" />
-                    <p className="text-gray-400 font-bold text-lg">Nenhum painel de cliente conectado.</p>
+                    <p className="text-gray-400 font-bold">Nenhum painel de cliente conectado.</p>
+                    <p className="text-sm text-gray-600 mt-2">Clique em "Nova Conexão VPS" para adicionar o link de um cliente.</p>
                   </div>
                 )}
                 
-                {safeClients.map(client => (
-                  <div key={client.id} onClick={() => { setActiveClientId(client.id); setActiveClientTab('geral'); }} className="bg-[#111827] rounded-2xl border border-gray-800 overflow-hidden flex flex-col relative group hover:border-gray-600 transition-all cursor-pointer shadow-lg">
+                {clients.map(client => (
+                  <div key={client.id} className="rounded-2xl border border-gray-800 overflow-hidden flex flex-col relative group hover:border-gray-600 transition-colors" style={{ backgroundColor: safeConfig.cardBgColor }}>
                     <div className="p-5 border-b border-gray-800 flex justify-between items-start">
                       <div>
                         <div className="flex items-center gap-3 mb-1">
-                          <h3 className="text-xl font-black text-white transition-colors" style={{ color: safeConfig.primaryColor }}>{client.name}</h3>
+                          <h3 className="text-xl font-black text-white">{client.name}</h3>
                           {client.status === 'online' ? <span className="flex items-center gap-1 text-[10px] font-bold bg-emerald-500/10 text-emerald-400 px-2 py-1 rounded-md uppercase border border-emerald-500/20"><CheckCircle2 size={12}/> Online</span> : 
                            client.status === 'offline' ? <span className="flex items-center gap-1 text-[10px] font-bold bg-rose-500/10 text-rose-400 px-2 py-1 rounded-md uppercase border border-rose-500/20"><XCircle size={12}/> Erro API</span> :
                            <span className="text-[10px] font-bold bg-gray-800 text-gray-400 px-2 py-1 rounded-md uppercase border border-gray-700">Não Sincronizado</span>}
                         </div>
-                        <a href={client.url} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()} className="text-xs text-gray-400 hover:text-white flex items-center gap-1 mt-1 font-mono">
+                        <a href={client.url} target="_blank" rel="noreferrer" className="text-xs text-blue-400 hover:text-blue-300 flex items-center gap-1 mt-1 font-mono">
                           {client.url} <ExternalLink size={10} />
                         </a>
                       </div>
                       <div className="flex gap-2">
-                        <button onClick={(e) => { e.stopPropagation(); syncClient(client); }} className="p-2 bg-gray-800 hover:bg-gray-700 rounded-lg text-gray-300 transition-colors" title="Sincronizar Dados">
-                          <RefreshCw size={16} className={syncingId === client.id ? 'animate-spin text-white' : ''} />
+                        <button onClick={() => syncClient(client)} className="p-2 bg-black/30 hover:bg-black/50 rounded-lg text-gray-300 transition-colors" title="Sincronizar Dados">
+                          <RefreshCw size={16} className={syncingId === client.id ? 'animate-spin text-cyan-400' : ''} />
                         </button>
                         {isSuper && (
-                          <button onClick={(e) => { e.stopPropagation(); if(window.confirm('Remover conexão?')) setClients(prev => safeArray(prev).filter(c => c.id !== client.id)); }} className="p-2 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 rounded-lg transition-colors" title="Remover Cliente">
-                            <Trash2 size={16} />
-                          </button>
+                          <>
+                            <button onClick={(e) => { e.stopPropagation(); setEditingClient(client); }} className="p-2 bg-yellow-500/10 hover:bg-yellow-500/20 text-yellow-400 rounded-lg transition-colors" title="Editar Cliente">
+                              <Edit3 size={16} />
+                            </button>
+                            <button onClick={() => { if(confirm('Remover conexão deste cliente?')) setClients(clients.filter(c => c.id !== client.id))}} className="p-2 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 rounded-lg transition-colors" title="Remover Cliente">
+                              <Trash2 size={16} />
+                            </button>
+                          </>
                         )}
                       </div>
                     </div>
 
-                    <div className="p-5 flex-1 bg-[#0d131f]">
+                    <div className="p-5 flex-1 bg-black/20">
                       {client.error ? (
                         <div className="text-rose-400 text-xs bg-rose-500/10 p-3 rounded-lg border border-rose-500/20 font-mono break-words">
                           <strong>Falha de Conexão:</strong> {client.error}
@@ -494,32 +523,28 @@ export default function CentralApp() {
                       ) : client.data ? (
                         <div className="grid grid-cols-3 gap-4">
                           <div className="text-center">
-                            <p className="text-[10px] uppercase font-bold text-gray-500 mb-1">Aprovados</p>
-                            <p className="text-xl font-black text-amber-400">{safeArray(client.data?.kanban).filter(k => k.col === 'Aprovados').length || 0}</p>
+                            <p className="text-[10px] uppercase font-bold text-gray-500 mb-1">Posts Aprovados</p>
+                            <p className="text-xl font-black text-white">{safeArray(client.data.kanban).filter(k => k.col === 'Aprovados').length || 0}</p>
                           </div>
-                          {isMaster && (
-                            <div className="text-center border-x border-gray-800">
-                              <p className="text-[10px] uppercase font-bold text-gray-500 mb-1">Faturas Abertas</p>
-                              <p className={`text-xl font-black ${safeArray(client.data?.finances).filter(f => f.status !== 'Pago').length > 0 ? 'text-rose-400' : 'text-emerald-400'}`}>
-                                {safeArray(client.data?.finances).filter(f => f.status !== 'Pago').length || 0}
-                              </p>
-                            </div>
-                          )}
-                          {isMaster && (
-                            <div className="text-center">
-                              <p className="text-[10px] uppercase font-bold text-gray-500 mb-1">Últimos Leads</p>
-                              <p className="text-xl font-black" style={{ color: safeConfig.secondaryColor }}>{safeArray(client.data?.reports)?.[0]?.leads || 0}</p>
-                            </div>
-                          )}
+                          <div className="text-center border-x border-gray-800">
+                            <p className="text-[10px] uppercase font-bold text-gray-500 mb-1">Faturas Abertas</p>
+                            <p className={`text-xl font-black ${safeArray(client.data.finances).filter(f => f.status !== 'Pago').length > 0 ? 'text-rose-400' : 'text-emerald-400'}`}>
+                              {safeArray(client.data.finances).filter(f => f.status !== 'Pago').length || 0}
+                            </p>
+                          </div>
+                          <div className="text-center">
+                            <p className="text-[10px] uppercase font-bold text-gray-500 mb-1">Últimos Leads</p>
+                            <p className="text-xl font-black text-cyan-400">{safeArray(client.data.reports)?.[0]?.leads || 0}</p>
+                          </div>
                         </div>
                       ) : (
                         <div className="text-center text-xs text-gray-600 font-bold uppercase py-4">Aguardando Sincronização...</div>
                       )}
                     </div>
                     
-                    <div className="bg-[#111827] p-3 text-center border-t border-gray-800 text-gray-400 font-bold text-xs uppercase flex items-center justify-center gap-2 group-hover:text-white transition-colors">
-                      Ver Detalhes da Conta <ArrowRight size={14}/>
-                    </div>
+                    <button onClick={() => { setActiveClientId(client.id); setActiveClientTab('geral'); }} className="w-full bg-black/40 p-3 text-center border-t border-gray-800 text-gray-400 font-bold text-xs uppercase flex items-center justify-center gap-2 hover:text-white hover:bg-black/60 transition-colors">
+                      Abrir Painel do Cliente <ArrowRight size={14}/>
+                    </button>
                   </div>
                 ))}
               </div>
@@ -531,9 +556,9 @@ export default function CentralApp() {
       {/* --- MODAL DE DETALHES DO CLIENTE --- */}
       {activeClient && (
         <div className="fixed inset-0 bg-black/90 backdrop-blur-md flex items-center justify-center p-4 z-50 overflow-y-auto">
-          <div className="bg-[#111827] rounded-3xl w-full max-w-5xl border border-gray-700 shadow-[0_0_50px_rgba(0,0,0,0.5)] flex flex-col max-h-[90vh] overflow-hidden">
+          <div className="rounded-3xl w-full max-w-5xl border border-gray-700 shadow-[0_0_50px_rgba(0,0,0,0.5)] flex flex-col max-h-[90vh] overflow-hidden" style={{ backgroundColor: safeConfig.cardBgColor }}>
             
-            <div className="p-6 border-b border-gray-800 flex flex-col md:flex-row md:justify-between md:items-center gap-4 bg-[#0d131f] flex-shrink-0">
+            <div className="p-6 border-b border-gray-800 flex flex-col md:flex-row md:justify-between md:items-center gap-4 bg-black/30 flex-shrink-0">
               <div>
                 <h2 className="text-2xl font-black text-white flex items-center gap-3">
                   {activeClient.name}
@@ -544,21 +569,18 @@ export default function CentralApp() {
                 </a>
               </div>
               <div className="flex flex-wrap gap-2">
-                <button onClick={() => setActiveClientTab('geral')} className={`px-4 py-2 rounded-lg text-sm font-bold transition-all ${activeClientTab === 'geral' ? 'text-white' : 'bg-[#1F2937] text-gray-400 hover:bg-gray-700'}`} style={activeClientTab === 'geral' ? primaryBg : {}}>Mídias e Relatórios</button>
-                
-                {/* BOTÃO: ESTEIRA KANBAN */}
-                <button onClick={() => setActiveClientTab('kanban')} className={`px-4 py-2 rounded-lg text-sm font-bold transition-all flex items-center gap-2 ${activeClientTab === 'kanban' ? 'text-white' : 'bg-[#1F2937] text-gray-400 hover:bg-gray-700'}`} style={activeClientTab === 'kanban' ? primaryBg : {}}>
+                <button onClick={() => setActiveClientTab('geral')} className={`px-4 py-2 rounded-lg text-sm font-bold transition-all ${activeClientTab === 'geral' ? 'text-white shadow-lg' : 'bg-black/40 text-gray-400 hover:bg-black/60'}`} style={activeClientTab === 'geral' ? primaryBg : {}}>Mídias</button>
+                <button onClick={() => setActiveClientTab('kanban')} className={`px-4 py-2 rounded-lg text-sm font-bold transition-all flex items-center gap-2 ${activeClientTab === 'kanban' ? 'text-white shadow-lg' : 'bg-black/40 text-gray-400 hover:bg-black/60'}`} style={activeClientTab === 'kanban' ? primaryBg : {}}>
                   <KanbanSquare size={16}/> Esteira Kanban
                 </button>
-
                 {isMaster && (
-                  <button onClick={() => setActiveClientTab('finance')} className={`px-4 py-2 rounded-lg text-sm font-bold transition-all flex items-center gap-2 ${activeClientTab === 'finance' ? 'text-white' : 'bg-[#1F2937] text-gray-400 hover:bg-gray-700'}`} style={activeClientTab === 'finance' ? primaryBg : {}}>
+                  <button onClick={() => setActiveClientTab('finance')} className={`px-4 py-2 rounded-lg text-sm font-bold transition-all flex items-center gap-2 ${activeClientTab === 'finance' ? 'text-white shadow-lg' : 'bg-black/40 text-gray-400 hover:bg-black/60'}`} style={activeClientTab === 'finance' ? primaryBg : {}}>
                     <CreditCard size={16}/> Financeiro & Docs
                   </button>
                 )}
                 {isMaster && activeClient.data?.config?.lookerStudioUrl && (
-                  <button onClick={() => setActiveClientTab('looker')} className={`px-4 py-2 rounded-lg text-sm font-bold transition-all flex items-center gap-2 ${activeClientTab === 'looker' ? 'text-white' : 'bg-[#1F2937] text-gray-400 hover:bg-gray-700'}`} style={activeClientTab === 'looker' ? primaryBg : {}}>
-                    <BarChart3 size={16}/> Looker Studio
+                  <button onClick={() => setActiveClientTab('looker')} className={`px-4 py-2 rounded-lg text-sm font-bold transition-all flex items-center gap-2 ${activeClientTab === 'looker' ? 'text-white shadow-lg' : 'bg-black/40 text-gray-400 hover:bg-black/60'}`} style={activeClientTab === 'looker' ? primaryBg : {}}>
+                    <BarChart3 size={16}/> Data Studio
                   </button>
                 )}
                 <div className="w-px bg-gray-700 mx-1 hidden md:block"></div>
@@ -568,75 +590,41 @@ export default function CentralApp() {
 
             <div className="p-6 overflow-y-auto flex-1 custom-scrollbar space-y-8 relative">
               
-              {/* ABA GERAL: APROVADOS E TRÁFEGO */}
+              {/* ABA GERAL */}
               {activeClientTab === 'geral' && (
-                <>
-                  <section>
-                    <div className="flex items-center gap-2 border-b border-gray-800 pb-3 mb-4">
-                      <CalendarDays className="text-amber-400"/>
-                      <h3 className="text-lg font-black text-white uppercase tracking-widest">Ações: Posts Aprovados (Aguardando)</h3>
+                <section>
+                  <div className="flex items-center gap-2 border-b border-gray-800 pb-3 mb-4">
+                    <CalendarDays className="text-amber-400"/>
+                    <h3 className="text-lg font-black text-white uppercase tracking-widest">Ações: Posts Aprovados (Aguardando Agendamento)</h3>
+                  </div>
+                  {(!activeClient.data?.kanban || safeArray(activeClient.data.kanban).filter(k => k.col === 'Aprovados').length === 0) ? (
+                    <div className="text-center py-8 bg-black/20 rounded-2xl border border-gray-800 text-gray-500 font-bold">Nenhum post aguardando agendamento.</div>
+                  ) : (
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      {safeArray(activeClient.data.kanban).filter(k => k.col === 'Aprovados').map(card => {
+                        let selectedDate = ''; 
+                        return (
+                          <div key={card.id} className="bg-black/40 p-5 rounded-2xl border border-gray-700 flex flex-col justify-between shadow-lg">
+                            <div className="mb-4">
+                              <h4 className="font-bold text-lg text-white leading-tight mb-2">{card.title}</h4>
+                              <p className="text-sm text-gray-400 line-clamp-2">{card.desc || card.caption || 'Sem descrição.'}</p>
+                            </div>
+                            <div className="bg-[#111827] p-3 rounded-xl border border-gray-800">
+                              <label className="text-[10px] text-gray-500 font-bold uppercase tracking-widest block mb-2">Definir Data de Postagem</label>
+                              <div className="flex gap-2">
+                                <input type="date" onChange={e => selectedDate = e.target.value} className="flex-1 bg-black/50 border border-gray-700 text-white rounded-lg p-2 text-sm outline-none" />
+                                <button onClick={() => schedulePost(activeClient, card.id, selectedDate)} className="text-white font-bold px-4 py-2 rounded-lg text-sm shadow-lg" style={primaryBg}>Programar</button>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
                     </div>
-                    {(!activeClient.data?.kanban || safeArray(activeClient.data.kanban).filter(k => k.col === 'Aprovados').length === 0) ? (
-                      <div className="text-center py-8 bg-[#0d131f] rounded-2xl border border-gray-800 text-gray-500 font-bold">Nenhum post aguardando agendamento.</div>
-                    ) : (
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        {safeArray(activeClient.data.kanban).filter(k => k.col === 'Aprovados').map(card => {
-                          let selectedDate = ''; 
-                          return (
-                            <div key={card.id} className="bg-[#1F2937] p-5 rounded-2xl border border-gray-700 flex flex-col justify-between shadow-lg">
-                              <div className="mb-4">
-                                <h4 className="font-bold text-lg text-white leading-tight mb-2">{card.title}</h4>
-                                <p className="text-sm text-gray-400 line-clamp-2">{card.desc || card.caption || 'Sem descrição.'}</p>
-                              </div>
-                              <div className="bg-[#111827] p-3 rounded-xl border border-gray-800">
-                                <label className="text-[10px] text-gray-500 font-bold uppercase tracking-widest block mb-2">Definir Data de Postagem</label>
-                                <div className="flex gap-2">
-                                  <input type="date" onChange={e => selectedDate = e.target.value} className="flex-1 bg-[#1F2937] border border-gray-700 text-white rounded-lg p-2 text-sm outline-none" />
-                                  <button onClick={() => schedulePost(activeClient, card.id, selectedDate)} className="text-white font-bold px-4 py-2 rounded-lg text-sm shadow-lg" style={primaryBg}>Programar</button>
-                                </div>
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </section>
-
-                  {isMaster && (
-                    <section>
-                      <div className="flex items-center gap-2 border-b border-gray-800 pb-3 mb-4 mt-8">
-                        <TrendingUp style={{ color: safeConfig.secondaryColor }}/>
-                        <h3 className="text-lg font-black text-white uppercase tracking-widest">Últimos Relatórios de Tráfego</h3>
-                      </div>
-                      {(!activeClient.data?.reports || safeArray(activeClient.data.reports).length === 0) ? (
-                        <div className="text-center py-8 bg-[#0d131f] rounded-2xl border border-gray-800 text-gray-500 font-bold">Nenhum relatório na VPS deste cliente.</div>
-                      ) : (
-                        <div className="space-y-4">
-                          {safeArray(activeClient.data.reports).slice(0, 3).map(rep => (
-                            <div key={rep.id} className="bg-[#1F2937] p-5 rounded-2xl border border-gray-700 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-                              <div>
-                                <p className="text-[10px] text-gray-500 font-bold uppercase tracking-widest mb-1">Referência: {formatSafeDate(rep.date)}</p>
-                                <div className="flex gap-6 mt-2">
-                                  <div><span className="text-xs text-gray-400 block">Leads</span><span className="font-black text-lg" style={{ color: safeConfig.secondaryColor }}>{rep.leads}</span></div>
-                                  <div><span className="text-xs text-gray-400 block">Custo/Lead</span><span className="font-black text-white text-lg">R$ {rep.cost}</span></div>
-                                  <div><span className="text-xs text-gray-400 block">Contratos</span><span className="font-black text-emerald-400 text-lg">{rep.contracts}</span></div>
-                                </div>
-                              </div>
-                              {rep.attachment && (
-                                <a href={rep.attachment} target="_blank" rel="noreferrer" className="flex items-center gap-2 bg-gray-800 hover:bg-gray-700 border border-gray-600 px-4 py-2 rounded-xl text-white text-sm font-bold transition-colors">
-                                  <FileText size={16}/> Ver PDF Completo
-                                </a>
-                              )}
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </section>
                   )}
-                </>
+                </section>
               )}
 
-              {/* ABA: ESTEIRA KANBAN MIRROR (COM EDIÇÃO DE CARDS) */}
+              {/* ABA: ESTEIRA KANBAN MIRROR */}
               {activeClientTab === 'kanban' && (
                 <div className="h-[65vh] flex flex-col">
                   <div className="flex justify-between items-center mb-4 border-b border-gray-800 pb-3">
@@ -645,12 +633,12 @@ export default function CentralApp() {
                         <Plus size={14}/> Novo Card
                      </button>
                   </div>
-                  <div className="flex gap-4 overflow-x-auto pb-4 flex-1 items-start snap-x custom-scrollbar">
+                  <div className="flex gap-4 overflow-x-auto pb-4 flex-1 items-stretch snap-x custom-scrollbar">
                     {kanbanColumns.map(col => (
                       <div key={col} 
-                           className="bg-[#1F2937] border border-gray-700 min-w-[280px] w-[280px] rounded-2xl p-4 flex flex-col max-h-full min-h-[50vh] snap-start"
+                           className="bg-black/20 border border-gray-700/50 min-w-[280px] w-[280px] rounded-2xl p-4 flex flex-col h-full snap-start"
                            onDragOver={onDragOver}
-                           onDrop={(e) => onDrop(e, col, activeClient)}>
+                           onDrop={(e) => onDropKanban(e, col, activeClient)}>
                         <div className="flex justify-between items-center mb-4 pb-2 border-b border-gray-700">
                           <h3 className="font-bold text-white text-sm">{col}</h3>
                           <span className="text-xs font-bold px-2 py-1 rounded-full bg-gray-800 text-gray-400 border border-gray-600 shadow-inner">
@@ -662,8 +650,10 @@ export default function CentralApp() {
                             <div key={card.id} 
                                  draggable 
                                  onDragStart={(e) => onDragStart(e, card.id)} 
+                                 onDragEnd={onDragEnd}
                                  onClick={() => setEditingCard(card)}
-                                 className="bg-[#111827] p-4 rounded-xl border border-gray-700 cursor-pointer hover:border-blue-500 transition-colors shadow-md">
+                                 className="kanban-card bg-[#111827] p-4 rounded-xl border border-gray-700 cursor-pointer hover:border-blue-500 transition-colors shadow-md relative"
+                                 data-id={card.id}>
                               <h4 className="font-bold text-white text-sm mb-2">{card.title}</h4>
                               <p className="text-xs text-gray-400 line-clamp-2 mb-3">{card.desc || card.caption || 'Sem descrição/legenda.'}</p>
                               <div className="flex items-center justify-between mt-2 pt-2 border-t border-gray-800">
@@ -695,7 +685,7 @@ export default function CentralApp() {
                         <Plus size={14}/> Adicionar Fatura
                       </button>
                     </div>
-                    <div className="bg-[#1F2937] border border-gray-700 rounded-2xl overflow-hidden">
+                    <div className="bg-black/40 border border-gray-700 rounded-2xl overflow-hidden">
                       <table className="w-full text-left border-collapse">
                         <thead>
                           <tr className="bg-gray-800/50 text-xs uppercase tracking-widest text-gray-500 border-b border-gray-700">
@@ -704,7 +694,7 @@ export default function CentralApp() {
                         </thead>
                         <tbody>
                           {safeArray(activeClient.data?.finances).map((fin) => (
-                            <tr key={fin.id} className="border-b border-gray-800 last:border-0 hover:bg-gray-800/20">
+                            <tr key={fin.id} className="border-b border-gray-800 last:border-0 hover:bg-black/60 transition-colors">
                               <td className="p-4 font-bold text-white text-sm">{fin.desc} <span className="block text-gray-500 text-xs font-normal mt-0.5">Venc: {formatSafeDate(fin.due)}</span></td>
                               <td className="p-4">
                                 <button onClick={() => {
@@ -743,7 +733,7 @@ export default function CentralApp() {
                     </div>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                       {safeArray(activeClient.data?.docs).map(doc => (
-                        <div key={doc.id} className="bg-[#1F2937] border border-gray-700 p-4 rounded-xl flex items-center justify-between">
+                        <div key={doc.id} className="bg-black/40 border border-gray-700 p-4 rounded-xl flex items-center justify-between">
                           <div>
                             <h4 className="font-bold text-white text-sm">{doc.title}</h4>
                             <p className="text-[10px] text-gray-500 uppercase mt-1">Add: {formatSafeDate(doc.date)}</p>
@@ -756,7 +746,7 @@ export default function CentralApp() {
                           </div>
                         </div>
                       ))}
-                      {(!activeClient.data?.docs || safeArray(activeClient.data.docs).length === 0) && <div className="col-span-full py-6 text-center text-gray-500 text-sm font-bold bg-[#1F2937] rounded-xl border border-gray-700">Sem documentos cadastrados.</div>}
+                      {(!activeClient.data?.docs || safeArray(activeClient.data.docs).length === 0) && <div className="col-span-full py-6 text-center text-gray-500 text-sm font-bold bg-black/40 rounded-xl border border-gray-700">Sem documentos cadastrados.</div>}
                     </div>
                   </section>
                 </div>
@@ -913,38 +903,51 @@ export default function CentralApp() {
         </div>
       )}
 
-      {/* MODAL ADICIONAR CLIENTE (Somente Super) */}
-      {addModalOpen && isSuper && (
+      {/* MODAIS (ADICIONAR E EDITAR CLIENTE) */}
+      {(addModalOpen || editingClient) && isSuper && (
         <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 z-50">
           <div className="bg-[#111827] rounded-3xl p-8 w-full max-w-md border border-gray-700 shadow-2xl">
             <h3 className="text-2xl font-black text-white mb-6 flex items-center gap-3">
-              <Globe style={{ color: safeConfig.primaryColor }}/> Conectar Novo Cliente
+              <Globe style={{ color: safeConfig.primaryColor }}/> {editingClient ? 'Editar Cliente' : 'Conectar Nova VPS'}
             </h3>
             
             <form onSubmit={(e) => {
               e.preventDefault();
-              const newClient = {
-                id: Date.now().toString(),
-                name: e.target.nome.value,
-                url: e.target.url.value,
-                login: e.target.login.value,
-                pass: e.target.pass.value,
-                status: 'pending',
-                data: null
-              };
-              setClients(prevClients => [...safeArray(prevClients), newClient]);
-              setAddModalOpen(false);
-              syncClient(newClient); 
+              if (editingClient) {
+                const updatedClient = {
+                  ...editingClient,
+                  name: e.target.nome.value,
+                  url: e.target.url.value,
+                  login: e.target.login.value,
+                  pass: e.target.pass.value
+                };
+                setClients(prev => safeArray(prev).map(c => c.id === updatedClient.id ? updatedClient : c));
+                setEditingClient(null);
+                syncClient(updatedClient);
+              } else {
+                const newClient = {
+                  id: Date.now().toString(),
+                  name: e.target.nome.value,
+                  url: e.target.url.value,
+                  login: e.target.login.value,
+                  pass: e.target.pass.value,
+                  status: 'pending',
+                  data: null
+                };
+                setClients(prevClients => [...safeArray(prevClients), newClient]);
+                setAddModalOpen(false);
+                syncClient(newClient); 
+              }
             }} className="space-y-4">
               
               <div>
-                <label className="text-xs font-bold text-gray-400 uppercase mb-1 block">Nome do Cliente</label>
-                <input name="nome" required placeholder="Ex: Agmaq Agro" className="w-full p-3 bg-[#1F2937] border border-gray-700 rounded-xl outline-none text-white focus:border-gray-500" />
+                <label className="text-xs font-bold text-gray-400 uppercase mb-1 block">Nome do Cliente / Empresa</label>
+                <input name="nome" required defaultValue={editingClient?.name || ''} placeholder="Ex: Agmaq Agro" className="w-full p-3 bg-[#1F2937] border border-gray-700 rounded-xl outline-none focus:border-cyan-500 text-white" />
               </div>
               
               <div>
-                <label className="text-xs font-bold text-gray-400 uppercase mb-1 block">URL do Painel (VPS)</label>
-                <input name="url" required placeholder="https://painel-cliente.com" className="w-full p-3 bg-[#1F2937] border border-gray-700 rounded-xl outline-none text-white font-mono text-sm focus:border-gray-500" />
+                <label className="text-xs font-bold text-gray-400 uppercase mb-1 block">URL do Painel do Cliente</label>
+                <input name="url" required defaultValue={editingClient?.url || ''} placeholder="https://painel-cliente.com" className="w-full p-3 bg-[#1F2937] border border-gray-700 rounded-xl outline-none focus:border-cyan-500 text-white font-mono text-sm" />
               </div>
 
               <div className="grid grid-cols-2 gap-4 pt-2 border-t border-gray-800 mt-4">
@@ -952,18 +955,18 @@ export default function CentralApp() {
                   <p className="text-xs font-bold text-amber-500 flex items-center gap-1"><ShieldCheck size={14}/> Credenciais Admin da VPS</p>
                 </div>
                 <div>
-                  <label className="text-xs font-bold text-gray-400 uppercase mb-1 block">Usuário</label>
-                  <input name="login" required placeholder="master" defaultValue="master" className="w-full p-3 bg-[#1F2937] border border-gray-700 rounded-xl outline-none text-white focus:border-gray-500" />
+                  <label className="text-xs font-bold text-gray-400 uppercase mb-1 block">Usuário Admin</label>
+                  <input name="login" required defaultValue={editingClient?.login || 'master'} placeholder="master" className="w-full p-3 bg-[#1F2937] border border-gray-700 rounded-xl outline-none focus:border-cyan-500 text-white" />
                 </div>
                 <div>
-                  <label className="text-xs font-bold text-gray-400 uppercase mb-1 block">Senha</label>
-                  <input name="pass" type="password" required placeholder="***" defaultValue="master123" className="w-full p-3 bg-[#1F2937] border border-gray-700 rounded-xl outline-none text-white focus:border-gray-500" />
+                  <label className="text-xs font-bold text-gray-400 uppercase mb-1 block">Senha Admin</label>
+                  <input name="pass" type="password" required defaultValue={editingClient?.pass || 'master123'} placeholder="***" className="w-full p-3 bg-[#1F2937] border border-gray-700 rounded-xl outline-none focus:border-cyan-500 text-white" />
                 </div>
               </div>
 
               <div className="flex gap-3 pt-6">
-                <button type="button" onClick={() => setAddModalOpen(false)} className="flex-1 p-3 rounded-xl font-bold text-gray-400 bg-gray-800 hover:bg-gray-700 transition-colors">Cancelar</button>
-                <button type="submit" className="flex-1 p-3 rounded-xl font-bold text-white shadow-lg shadow-blue-900/20" style={primaryBg}>Conectar</button>
+                <button type="button" onClick={() => { setAddModalOpen(false); setEditingClient(null); }} className="flex-1 p-3 rounded-xl font-bold text-gray-400 bg-gray-800 hover:bg-gray-700 transition-colors">Cancelar</button>
+                <button type="submit" className="flex-1 p-3 rounded-xl font-bold text-white shadow-lg transition-transform hover:scale-105" style={primaryBg}>{editingClient ? 'Salvar Edição' : 'Conectar API'}</button>
               </div>
             </form>
           </div>
@@ -976,15 +979,15 @@ export default function CentralApp() {
 }
 
 // Subcomponente de Estatística
-function StatCard({ title, value, icon, color="text-white", borderColor, textColor="text-white" }) {
+function StatCard({ title, value, icon, color, bg, border, cardBg }) {
   return (
-    <div className={`p-5 rounded-2xl border ${borderColor} bg-[#111827] flex flex-col justify-between shadow-lg`}>
-      <div className="flex justify-between items-start mb-3">
-        <span className={`p-2.5 rounded-xl bg-[#1F2937] border ${borderColor} ${color}`}>{icon}</span>
+    <div className={`p-5 rounded-2xl border ${border} flex flex-col justify-between transition-colors`} style={{ backgroundColor: cardBg }}>
+      <div className="flex justify-between items-start mb-2">
+        <span className={`p-2 rounded-lg border ${border} ${color} ${bg}`}>{icon}</span>
       </div>
       <div>
-        <h3 className={`text-3xl font-black mb-1 ${textColor}`}>{value}</h3>
-        <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest leading-tight">{title}</p>
+        <h3 className="text-3xl font-black text-white mb-1">{value}</h3>
+        <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">{title}</p>
       </div>
     </div>
   );
