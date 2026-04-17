@@ -7,7 +7,7 @@ import {
   BarChart3, Settings, CreditCard, Edit3
 } from 'lucide-react';
 
-// --- FUNÇÕES AUXILIARES DE SEGURANÇA E FORMATAÇÃO ---
+// --- FUNÇÕES DE SEGURANÇA MÁXIMA PARA EVITAR TELA BRANCA (CRASH) ---
 const safeArray = (arr) => Array.isArray(arr) ? arr : [];
 const safeObject = (obj) => (typeof obj === 'object' && obj !== null && !Array.isArray(obj)) ? obj : {};
 
@@ -124,7 +124,7 @@ export default function CentralApp() {
   const [activeClientTab, setActiveClientTab] = useState('geral'); // geral | kanban | looker | financeiro
   
   const [editingFin, setEditingFin] = useState(null);
-  const [editingCard, setEditingCard] = useState(null); // NOVO ESTADO: Card em edição
+  const [editingCard, setEditingCard] = useState(null);
 
   const showToast = (msg) => setToast(msg);
   
@@ -170,9 +170,17 @@ export default function CentralApp() {
         
         const dataUsers = await resUsers.json();
         let usersArray = dataUsers?.data && Array.isArray(dataUsers.data) ? dataUsers.data : (Array.isArray(dataUsers) ? dataUsers : []);
-        if (usersArray.length === 0) usersArray = [{ login: 'gestor', pass: 'gestor123', role: 'administrador' }];
+        
+        // CORREÇÃO: Aceitar os novos cargos do painel atualizado (master) e manter o antigo (gestor/administrador)
+        if (usersArray.length === 0) {
+            usersArray = [
+                { login: 'master', pass: 'master123', role: 'master' },
+                { login: 'gestor', pass: 'gestor123', role: 'administrador' }
+            ];
+        }
 
-        const isValid = usersArray.find(u => u.login === client.login && u.pass === client.pass && ['gestor', 'administrador'].includes(u.role));
+        // CORREÇÃO: Validar contra a role 'master' também
+        const isValid = usersArray.find(u => u.login === client.login && u.pass === client.pass && ['master', 'gestor', 'administrador'].includes(u.role));
         if (!isValid) throw new Error("Acesso Negado: Senha incorreta ou permissão insuficiente.");
 
         const [resK, resF, resR, resC, resD] = await Promise.all([
@@ -277,6 +285,7 @@ export default function CentralApp() {
   const onDragOver = (e) => e.preventDefault();
   
   const onDrop = (e, col, client) => {
+    e.preventDefault();
     const cardId = e.dataTransfer.getData('cardId');
     let kanbanArray = safeArray(client.data?.kanban);
     const updated = kanbanArray.map(c => c.id === cardId ? { ...c, col } : c);
@@ -639,7 +648,7 @@ export default function CentralApp() {
                   <div className="flex gap-4 overflow-x-auto pb-4 flex-1 items-start snap-x custom-scrollbar">
                     {kanbanColumns.map(col => (
                       <div key={col} 
-                           className="bg-[#1F2937] border border-gray-700 min-w-[280px] w-[280px] rounded-2xl p-4 flex flex-col max-h-full snap-start"
+                           className="bg-[#1F2937] border border-gray-700 min-w-[280px] w-[280px] rounded-2xl p-4 flex flex-col max-h-full min-h-[50vh] snap-start"
                            onDragOver={onDragOver}
                            onDrop={(e) => onDrop(e, col, activeClient)}>
                         <div className="flex justify-between items-center mb-4 pb-2 border-b border-gray-700">
@@ -648,7 +657,7 @@ export default function CentralApp() {
                             {safeArray(activeClient.data?.kanban).filter(c => c.col === col).length}
                           </span>
                         </div>
-                        <div className="flex flex-col gap-3 overflow-y-auto pr-1 custom-scrollbar">
+                        <div className="flex flex-col gap-3 overflow-y-auto pr-1 custom-scrollbar flex-1 h-full">
                           {safeArray(activeClient.data?.kanban).filter(c => c.col === col).map(card => (
                             <div key={card.id} 
                                  draggable 
@@ -664,7 +673,9 @@ export default function CentralApp() {
                             </div>
                           ))}
                           {safeArray(activeClient.data?.kanban).filter(c => c.col === col).length === 0 && (
-                            <div className="text-center py-6 text-gray-600 text-xs font-bold uppercase tracking-widest border-2 border-dashed border-gray-700 rounded-xl">Vazio</div>
+                            <div className="text-center py-6 border-2 border-dashed border-gray-700 rounded-xl opacity-50 flex-1 flex items-center justify-center pointer-events-none">
+                              <span className="text-xs font-bold uppercase tracking-wider text-gray-500">Soltar Aqui</span>
+                            </div>
                           )}
                         </div>
                       </div>
@@ -754,9 +765,6 @@ export default function CentralApp() {
               {/* ABA: LOOKER STUDIO */}
               {activeClientTab === 'looker' && isMaster && (
                 <div className="flex flex-col h-[75vh] bg-white rounded-2xl overflow-hidden relative border border-gray-700">
-                   <div className="bg-yellow-50 p-2 text-center text-[10px] font-bold text-yellow-700 border-b border-yellow-200">
-                    ⚠️ Lembrete: O cliente precisa ter ativado a incorporação no Looker Studio.
-                  </div>
                   <iframe src={getEmbedUrl(activeClient.data?.config?.lookerStudioUrl)} frameBorder="0" style={{ border: 0 }} allowFullScreen className="w-full h-full flex-1"></iframe>
                 </div>
               )}
@@ -860,6 +868,19 @@ export default function CentralApp() {
                             <button onClick={() => setEditingCard({...editingCard, carousel: [...(editingCard.carousel || []), '']})} className="text-xs font-bold text-blue-400 flex items-center gap-1 w-full justify-center p-2 hover:bg-blue-500/10 rounded-lg transition-colors"><Plus size={14}/> Adicionar Slide</button>
                           </div>
                         )}
+                        
+                        {/* --- PREVIEWS DO GOOGLE DRIVE --- */}
+                        <div className="mt-4 flex flex-col gap-4">
+                          {!editingCard.isCarousel && editingCard.link && editingCard.link.includes('drive.google.com') && (
+                            <iframe src={formatDriveLink(editingCard.link)} className="w-full h-72 border border-gray-600 rounded-xl bg-[#111827] shadow-sm" title="Preview"></iframe>
+                          )}
+                          {editingCard.isCarousel && editingCard.carousel.map((link, idx) => link && link.includes('drive.google.com') && (
+                            <div key={idx} className="flex flex-col gap-1">
+                              <span className="text-xs font-bold text-gray-500 uppercase">Preview {idx + 1}</span>
+                              <iframe src={formatDriveLink(link)} className="w-full h-72 border border-gray-600 rounded-xl bg-[#111827] shadow-sm" title={`Preview ${idx + 1}`}></iframe>
+                            </div>
+                          ))}
+                        </div>
                       </div>
                       
                       <div>
@@ -868,9 +889,21 @@ export default function CentralApp() {
                       </div>
                     </div>
                     
-                    <div className="pt-4 mt-4 border-t border-gray-800 flex gap-3 flex-shrink-0">
-                      <button onClick={()=>setEditingCard(null)} className="flex-1 p-3 rounded-xl font-bold bg-gray-800 text-gray-400 hover:text-white transition-colors">Cancelar</button>
-                      <button onClick={()=>handleSaveCard(activeClient)} className="flex-1 p-3 rounded-xl font-bold text-white shadow-lg transition-transform hover:scale-[1.02]" style={primaryBg}>Salvar Alterações</button>
+                    <div className="pt-4 mt-4 border-t border-gray-800 flex justify-between gap-3 flex-shrink-0">
+                      <button onClick={() => {
+                        if (window.confirm('Apagar este card da esteira?')) {
+                          const idToDel = editingCard.id;
+                          setEditingCard(null);
+                          const updated = safeArray(activeClient.data?.kanban).filter(c => c.id !== idToDel);
+                          saveClientData(activeClient, 'kanban', updated);
+                        }
+                      }} className="px-5 py-3 rounded-xl font-bold bg-red-500/10 text-red-400 hover:bg-red-500/20 transition-colors flex items-center gap-2">
+                        <Trash2 size={16}/> Apagar Card
+                      </button>
+                      <div className="flex gap-3">
+                        <button onClick={()=>setEditingCard(null)} className="px-5 py-3 rounded-xl font-bold bg-gray-800 text-gray-400 hover:text-white transition-colors">Cancelar</button>
+                        <button onClick={()=>handleSaveCard(activeClient)} className="px-6 py-3 rounded-xl font-bold text-white shadow-lg transition-transform hover:scale-[1.02]" style={primaryBg}>Salvar Alterações</button>
+                      </div>
                     </div>
                  </div>
               </div>
@@ -920,11 +953,11 @@ export default function CentralApp() {
                 </div>
                 <div>
                   <label className="text-xs font-bold text-gray-400 uppercase mb-1 block">Usuário</label>
-                  <input name="login" required placeholder="admin" defaultValue="admin" className="w-full p-3 bg-[#1F2937] border border-gray-700 rounded-xl outline-none text-white focus:border-gray-500" />
+                  <input name="login" required placeholder="master" defaultValue="master" className="w-full p-3 bg-[#1F2937] border border-gray-700 rounded-xl outline-none text-white focus:border-gray-500" />
                 </div>
                 <div>
                   <label className="text-xs font-bold text-gray-400 uppercase mb-1 block">Senha</label>
-                  <input name="pass" type="password" required placeholder="***" defaultValue="admin123" className="w-full p-3 bg-[#1F2937] border border-gray-700 rounded-xl outline-none text-white focus:border-gray-500" />
+                  <input name="pass" type="password" required placeholder="***" defaultValue="master123" className="w-full p-3 bg-[#1F2937] border border-gray-700 rounded-xl outline-none text-white focus:border-gray-500" />
                 </div>
               </div>
 
